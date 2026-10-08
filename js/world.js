@@ -6,9 +6,13 @@
 //   Subjects each person or pet becomes a cutout standing at their depth,
 //            turning to face you, with a soft contact shadow
 //   Backdrop a sky/ground gradient sampled from the photo's own colors
+//
+// With a Claude scene description it also levels the camera, measures depth
+// in metres from the ground, and builds simple surroundings beyond the frame.
 
 import * as THREE from 'three';
 import { pullPush, fillCloned, rankFilter, boxBlur, resample, percentile } from './fill.js';
+import { buildSurroundings } from './surroundings.js';
 
 const GRID_LONG = 384;          // mesh vertices along the photo's long side
 const FOV_LONG_DEG = 65;        // assumed lens: a typical phone main camera
@@ -32,13 +36,19 @@ const backdropFn = /* glsl */`
   }`;
 
 const worldFrag = /* glsl */`
-  uniform sampler2D map; uniform float edge; uniform float shade; uniform float opacity;
+  uniform sampler2D map; uniform float edge; uniform float shade; uniform float opacity; uniform float dither;
   varying vec2 vUv; varying vec3 vWorld;
   ${backdropFn}
   void main() {
     vec3 col = texture2D(map, vUv).rgb * shade;
     float e = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
     float f = smoothstep(0.0, edge, e);
+    if (dither > 0.5) {
+      // With surroundings, the photo's edge dissolves into them instead of into the sky.
+      if (f < fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453)) discard;
+      gl_FragColor = vec4(col, opacity);
+      return;
+    }
     vec3 d = normalize(vWorld - cameraPosition);
     gl_FragColor = vec4(mix(backdrop(d), col, f), opacity);
   }`;
@@ -85,6 +95,14 @@ function canvasFrom(rgbaFloat, w, h) {
   return c;
 }
 
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const median = (arr) => { const s = Float64Array.from(arr).sort(); return s.length ? s[s.length >> 1] : 0; };
+const srgbVec = (hexStr, fallback) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hexStr || '');
+  const n = parseInt(m ? m[1] : fallback, 16);
+  return new THREE.Vector3(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+};
+
 function texFrom(canvas) {
   const t = new THREE.CanvasTexture(canvas);
   t.colorSpace = THREE.NoColorSpace; // shaders pass sRGB straight through
@@ -97,15 +115,20 @@ function texFrom(canvas) {
 /**
  * @param {object} scan   output of the AI step (see scan-format.js)
  * @param {HTMLCanvasElement} photo  the photo at scan.width x scan.height
- * @param {{strength?: number}} opts  depth strength, 0.5 (flat) to 2 (deep)
+ * @param {{strength?: number, scene?: object}} opts
+ *   strength  depth strength, 0.5 (flat) to 2 (deep), used when depth isn't measured
+ *   scene     Claude's description of the photo (api/scene.js), optional
  */
-export function buildWorld(scan, photo, { strength = 1 } = {}) {
+export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
   const W = scan.width, H = scan.height;
   const L = Math.max(W, H);
-  const f = (L / 2) / Math.tan((FOV_LONG_DEG * Math.PI) / 360);
+  const hfov = scene ? clamp(Number(scene.camera?.hfov_deg) || 0, 0, 120) : 0;
+  const f = hfov >= 25 ? (W / 2) / Math.tan((hfov * Math.PI) / 360) : (L / 2) / Math.tan((FOV_LONG_DEG * Math.PI) / 360);
   const cx = W / 2, cy = H / 2;
   const near = 1, far = Math.pow(12, strength);
-  const zOf = (dn) => 1 / (1 / far + dn * (1 / near - 1 / far));
+  let zOf = (dn) => 1 / (1 / far + dn * (1 / near - 1 / far));
+  // Camera tilt: positive = the photo looks down at the ground.
+  const pitch = scene ? (clamp(Number(scene.camera?.pitch_deg) || 0, -45, 85) * Math.PI) / 180 : 0;
 
   const px = photo.getContext('2d').getImageData(0, 0, W, H).data;
 
@@ -133,6 +156,50 @@ export function buildWorld(scan, photo, { strength = 1 } = {}) {
   }
   const hasSubjects = scan.subjects.length > 0;
   const maskWide = hasSubjects ? rankFilter(mask, W, H, Math.max(2, Math.round(L * 0.002)), 'max') : mask;
+
+  // --- Measure depth in metres from the ground (needs Claude's scene) -----
+  // A ground pixel at image row v is hit by a ray that drops a known amount
+  // per metre, given the camera height and tilt. Fitting the model's relative
+  // disparity to those true values turns the whole depth map into metres.
+  let calib = null;
+  if (scene && Array.isArray(scene.ground_polygon) && scene.ground_polygon.length >= 3) {
+    const h = clamp(Number(scene.camera?.height_m) || 1.5, 0.3, 400);
+    const poly = scene.ground_polygon.map((p) => [clamp(Number(p.x) || 0, 0, 1) * W, clamp(Number(p.y) || 0, 0, 1) * H]);
+    const inside = (x, y) => {
+      let c = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const [xi, yi] = poly[i], [xj, yj] = poly[j];
+        if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c;
+      }
+      return c;
+    };
+    const xs = [], ys = [];
+    for (let j = 0; j < 56; j++) for (let i = 0; i < 56; i++) {
+      const u = ((i + 0.5) / 56) * W, v = ((j + 0.5) / 56) * H;
+      if (!inside(u, v) || maskWide[Math.floor(v) * W + Math.floor(u)] > 0.5) continue;
+      const yWorld = (-(v - cy) / f) * Math.cos(pitch) - Math.sin(pitch);
+      if (yWorld > -0.02) continue;
+      xs.push(dnAt(u, v)); ys.push(-yWorld / h);
+    }
+    if (xs.length >= 25) {
+      // Theil-Sen: robust to the polygon spilling onto non-ground pixels.
+      const step = Math.max(1, Math.floor(xs.length / 160));
+      const sx = xs.filter((_, i) => i % step === 0), sy = ys.filter((_, i) => i % step === 0);
+      const slopes = [];
+      for (let i = 0; i < sx.length; i++) for (let j = i + 1; j < sx.length; j++) {
+        const dx = sx[j] - sx[i];
+        if (Math.abs(dx) > 0.02) slopes.push((sy[j] - sy[i]) / dx);
+      }
+      const a = median(slopes);
+      const b = median(xs.map((x, i) => ys[i] - a * x));
+      const err = median(xs.map((x, i) => Math.abs(a * x + b - ys[i]) / ys[i]));
+      if (a > 0 && a + b > 0 && err < 0.3) {
+        const zFarCap = clamp(60 * h, 150, 1500);
+        zOf = (dn) => 1 / Math.max(a * dn + b, 1 / zFarCap);
+        calib = { h, a, b, zFarCap, err };
+      }
+    }
+  }
 
   // --- Grid ----------------------------------------------------------------
   const gs = GRID_LONG / L;
@@ -217,9 +284,15 @@ export function buildWorld(scan, photo, { strength = 1 } = {}) {
   })();
 
   // --- Backdrop colors from the photo itself ------------------------------
-  const cTop = avgRows(px, W, H, 0, H * 0.08);
-  const cBottom = avgRows(px, W, H, H * 0.92, H).multiplyScalar(0.8);
-  const cHorizon = avgRows(px, W, H, H * 0.35, H * 0.65).lerp(cTop, 0.35);
+  let cTop = avgRows(px, W, H, 0, H * 0.08);
+  let cBottom = avgRows(px, W, H, H * 0.92, H).multiplyScalar(0.8);
+  let cHorizon = avgRows(px, W, H, H * 0.35, H * 0.65).lerp(cTop, 0.35);
+  if (scene?.sky) {
+    // The photo may not show any sky (a camera pointing down), so use Claude's.
+    cTop = srgbVec(scene.sky.top, '9fc0e8');
+    cHorizon = srgbVec(scene.sky.horizon, 'd3dee8');
+    cBottom = srgbVec(scene.ground_color, '7a7f6a').multiplyScalar(0.85);
+  }
   const uniformsBase = () => ({
     cTop: { value: cTop }, cHorizon: { value: cHorizon }, cBottom: { value: cBottom },
   });
@@ -255,20 +328,26 @@ export function buildWorld(scan, photo, { strength = 1 } = {}) {
   const A = build(dnFill, (c) => (torn[c] ? 2 : 1));
   const B = build(dnB, (c) => (nearTear[c] > 0 ? 1 : 0), 1.004);
 
+  // `content` holds everything built in the photo's camera frame. Rotating it
+  // by the camera tilt makes the ground level in the world.
   const group = new THREE.Group();
+  const content = new THREE.Group();
+  content.rotation.x = -pitch;
+  group.add(content);
+  const withSurroundings = Boolean(calib && scene?.layout);
   const textures = [];
   const worldMat = (canvas, shade, extra = {}) => {
     const t = texFrom(canvas); textures.push(t);
     return new THREE.ShaderMaterial({
       vertexShader: worldVert, fragmentShader: worldFrag, side: THREE.DoubleSide,
-      uniforms: { map: { value: t }, edge: { value: 0.05 }, shade: { value: shade }, opacity: { value: 1 }, ...uniformsBase() },
+      uniforms: { map: { value: t }, edge: { value: withSurroundings ? 0.07 : 0.05 }, shade: { value: shade }, opacity: { value: 1 }, dither: { value: withSurroundings ? 1 : 0 }, ...uniformsBase() },
       ...extra,
     });
   };
   const matA = worldMat(texACanvas, 1);
   const meshA = new THREE.Mesh(A.main, matA);
   const meshB = new THREE.Mesh(B.main, worldMat(texBCanvas, 0.94));
-  group.add(meshB, meshA);
+  content.add(meshB, meshA);
   // Torn triangles keep the photo pixel-perfect from where it was taken,
   // then dissolve as soon as you move, revealing layer B.
   let edgeMat = null;
@@ -279,7 +358,7 @@ export function buildWorld(scan, photo, { strength = 1 } = {}) {
     });
     const meshE = new THREE.Mesh(A.edge, edgeMat);
     meshE.renderOrder = 1;
-    group.add(meshE);
+    content.add(meshE);
   }
 
   // --- Subjects ------------------------------------------------------------
@@ -314,7 +393,7 @@ export function buildWorld(scan, photo, { strength = 1 } = {}) {
     }));
     mesh.renderOrder = 2;
     pivot.add(mesh);
-    group.add(pivot);
+    content.add(pivot);
     const [bx0, , bx1, by1] = s.box;
     const footY = (-(by1 - cy) / f) * zS;
     if (by1 < H - 3) {
@@ -323,10 +402,11 @@ export function buildWorld(scan, photo, { strength = 1 } = {}) {
         vertexShader: worldVert, fragmentShader: shadowFrag, transparent: true, depthWrite: false,
         uniforms: { strength: { value: 0.32 } },
       }));
-      sh.rotation.x = -Math.PI / 2;
+      // Lie flat on the real (levelled) ground.
+      sh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, Math.cos(pitch), Math.sin(pitch)));
       sh.position.set(((bx0 + bx1) / 2 - cx) / f * zS, footY + 0.004 * zS, -zS + sw * 0.05);
       sh.renderOrder = 1;
-      group.add(sh);
+      content.add(sh);
     }
     subjects.push({
       label: s.label, pivot, mesh, z: zS, height: ((by1 - s.box[1]) / f) * zS,
@@ -335,7 +415,8 @@ export function buildWorld(scan, photo, { strength = 1 } = {}) {
   }
 
   // --- Backdrop sphere -----------------------------------------------------
-  const sky = new THREE.Mesh(new THREE.SphereGeometry(far * 6, 32, 16), new THREE.ShaderMaterial({
+  const skyRadius = calib ? 2500 : far * 6;
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(skyRadius, 32, 16), new THREE.ShaderMaterial({
     vertexShader: worldVert, fragmentShader: skyFrag, side: THREE.BackSide, depthWrite: false,
     uniforms: uniformsBase(),
   }));
@@ -351,11 +432,36 @@ export function buildWorld(scan, photo, { strength = 1 } = {}) {
   // Everything is scaled so the nearest content sits about 1 unit away.
   // A person very close to the lens leaves a big gap behind them when you
   // move sideways, so close-up portraits get a smaller walking area.
-  const nearestZ = subjects.reduce((m, s) => Math.min(m, s.z), Infinity);
+  // With measured depth, "1 unit" becomes the distance to the nearest content.
+  const unit = calib ? clamp(zs[Math.floor(zs.length * 0.02)], 0.5, 60) : 1;
+  const nearestZ = subjects.reduce((m, s) => Math.min(m, s.z / unit), Infinity);
   const room = Number.isFinite(nearestZ) ? Math.min(1, Math.max(0.4, nearestZ / 3)) : 1;
-  const bounds = { minX: -0.45 * room, maxX: 0.45 * room, minZ: -0.9 * room, maxZ: 0.35 * room };
+  const reach = room * unit * (withSurroundings ? 1.8 : 1);
+  const bounds = { minX: -0.45 * reach, maxX: 0.45 * reach, minZ: -0.9 * reach, maxZ: 0.35 * reach };
+
+  // --- Surroundings beyond the frame --------------------------------------
+  let surroundings = null;
+  if (withSurroundings) {
+    const toCam = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitch);
+    const inFrontOfPhoto = (pWorld) => {
+      const p = pWorld.clone().applyQuaternion(toCam);
+      if (p.z > -0.1) return false;
+      const u = cx + (f * p.x) / -p.z, v = cy - (f * p.y) / -p.z;
+      if (u < -0.08 * W || u > 1.08 * W || v < -0.08 * H || v > 1.08 * H) return false;
+      const gi = Math.round(clamp(u / W, 0, 1) * (gw - 1)), gj = Math.round(clamp(v / H, 0, 1) * (gh - 1));
+      return -p.z < zOf(dnFill[gj * gw + gi]) * 1.05;
+    };
+    surroundings = buildSurroundings(scene, { height: calib.h, inFrontOfPhoto, seed: W * 31 + H });
+    group.add(surroundings.group);
+  }
+
+  // Where to stand for the diorama view, in the levelled world.
+  group.updateMatrixWorld(true);
+  const focus = content.localToWorld(new THREE.Vector3(0, 0, -zMedian));
 
   const sphere = A.main.boundingSphere.clone();
+  const startQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(-pitch, 0, 0, 'YXZ'));
+  const camLocal = new THREE.Vector3();
 
   const vfovPhoto = 2 * Math.atan(H / 2 / f), hfovPhoto = 2 * Math.atan(W / 2 / f);
   // Show the whole photo when the screen allows it, but on tall phone screens
@@ -368,29 +474,35 @@ export function buildWorld(scan, photo, { strength = 1 } = {}) {
 
   function update(t, camera) {
     if (edgeMat) {
-      const moved = camera.position.length();
+      const moved = camera.position.length() / unit;
       edgeMat.uniforms.opacity.value = 1 - THREE.MathUtils.smoothstep(moved, 0.004, 0.09);
       edgeMat.visible = edgeMat.uniforms.opacity.value > 0.003;
     }
+    content.worldToLocal(camLocal.copy(camera.position));
     for (const s of subjects) {
-      const dx = camera.position.x - s.pivot.position.x, dz = camera.position.z - s.pivot.position.z;
+      const dx = camLocal.x - s.pivot.position.x, dz = camLocal.z - s.pivot.position.z;
       s.pivot.rotation.y = Math.atan2(dx, dz) - s.base;
       s.mesh.scale.y = 1 + Math.sin(t * 2.1 + s.phase) * 0.006;
     }
   }
 
   function dispose() {
-    group.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    content.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    sky.geometry.dispose(); sky.material.dispose();
     textures.forEach(t => t.dispose());
+    if (surroundings) surroundings.dispose();
   }
 
   return {
     group, update, dispose,
     info: {
-      width: W, height: H, near, far, zMedian, bounds, sphere, walkFov,
-      speed: 0.42 * room,
+      width: W, height: H, near, far, zMedian, bounds, sphere, walkFov, startQuat, focus,
+      speed: 0.42 * room * unit,
       triangles: A.tris + B.tris,
       subjects: subjects.map(s => s.label),
+      measured: Boolean(calib), calib, levelled: Boolean(scene), surroundings: withSurroundings,
+      caption: scene?.caption || '',
     },
+    fog: surroundings ? surroundings.fog : null,
   };
 }

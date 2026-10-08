@@ -2,7 +2,16 @@
 
 Upload a photo and step inside it. The photo becomes a small 3D world you can walk around in, and any people (or pets) in it are cut out and stand in the scene, turning to face you.
 
-Everything runs in the visitor's browser. No server, no API keys, no cost per photo. The photo is never uploaded.
+Everything runs in the visitor's browser by default. No API keys, no cost per photo, and the photo is never uploaded.
+
+**Smart scene (optional, uses Claude).** With an Anthropic API key set, Claude reads a small copy of the photo and the app uses its answer to:
+
+- level the camera (a traffic camera pointing down no longer gives a tilted world),
+- measure depth in metres from the ground,
+- drop false "people" (sign pictograms, drivers inside cars, posters),
+- build simple 3D surroundings beyond the frame: the road or path continues, with grass, hedges, trees, lamp posts and buildings, so turning around shows a believable place instead of an empty backdrop. It is stylized, not photoreal: Claude describes the place, it does not paint pixels.
+
+It costs well under a tenth of a cent per photo with Claude Haiku 5.5. When Smart scene is on, the photo is sent to Anthropic. Visitors can turn it off with the toggle.
 
 ## Run it locally
 
@@ -11,6 +20,16 @@ python3 serve.py        # then open http://localhost:8000
 ```
 
 `serve.py` is a static file server that also sends two headers (`Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`). They let the AI models use several CPU threads. Any static server works without them, just slower.
+
+## Turn on Smart scene
+
+1. Create a key at console.anthropic.com. Set a monthly spend limit there (a few dollars is plenty).
+2. In the Vercel project: Settings → Environment Variables → add `ANTHROPIC_API_KEY` for Production.
+3. Redeploy. The "Smart scene" toggle appears on the site once `/api/scene` reports a key.
+
+Optional: `ANTHROPIC_MODEL` (default `claude-haiku-5-5`). The endpoint also limits each visitor to 30 photos an hour per server instance.
+
+Locally, `serve.py` has no API, so Smart scene stays hidden. Use `npx vercel dev` to run the function locally.
 
 ## Deploy (free)
 
@@ -28,7 +47,8 @@ It's a static site with no build step.
    - Where depth jumps (an edge), the mesh splits. A second, blurred layer sits behind every edge so you see more scene instead of a hole.
    - Split edges stay in place while you stand where the photo was taken, so the first view matches the photo exactly. They fade out as soon as you move.
    - People are removed from the background, the gap is filled (smooth color plus texture cloned from beside them, slightly darkened like a shadow), and each person stands as a cutout at their own depth.
-4. **Viewer.** three.js renders it. Diorama mode orbits the world from outside. Walk mode puts you where the photographer stood.
+4. **Smart scene** (`api/scene.js`, `js/surroundings.js`): Claude returns JSON with camera height, tilt and field of view, an outline of the flat ground, a verdict per detected person, sky and ground colors, and a cross-section of the place (bands like sidewalk, road, grass, hedge, trees, buildings, with lamp posts or trees lined up along them). Ground pixels are fitted to the true ground plane to turn relative depth into metres. Nothing procedural is placed where it would cover the photo.
+5. **Viewer.** three.js renders it. Diorama mode orbits the world from outside. Walk mode puts you where the photographer stood.
 
 The models download once from Hugging Face (about 70 MB, or 90 MB on devices with a fast GPU) and are cached by the browser.
 
@@ -43,6 +63,7 @@ The models download once from Hugging Face (about 70 MB, or 90 MB on devices wit
 - A single photo only shows one side of everything. You can walk a few steps before stretched or blurry areas appear, so the walking area is limited on purpose (smaller for close-up portraits).
 - People are flat cutouts. From the side you see the same front view, not their back.
 - The space behind a person is guessed. Moving sideways shows a soft, blurry patch there.
+- Smart scene surroundings are simple shapes in matching colors. They follow Claude's estimate of the layout, so they may not line up exactly with the photo.
 - The first photo takes longer while the models download. On a slow, GPU-less test machine each photo then took about 20 to 40 seconds. A normal laptop should be faster.
 
 ## Files
@@ -56,7 +77,9 @@ js/world.js         builds the 3D world from photo + depth + cutouts
 js/fill.js          hole filling and image filters
 js/controls.js      walking controls (keys, drag, touch stick)
 js/scan-format.js   saves/loads a "scan" so the sample needs no AI
-sample/             the sample photo and its precomputed scan
+js/surroundings.js  builds the 3D surroundings from Claude's description
+api/scene.js        Vercel function that asks Claude about the photo
+sample/             the sample photo, its precomputed scan and scene description
 tools/make-sample.html  regenerates a sample scan (open it via serve.py)
 ```
 

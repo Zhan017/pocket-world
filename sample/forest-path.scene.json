@@ -1,0 +1,117 @@
+{
+  "caption": "Forest path with a walker in autumn",
+  "scene_type": "path",
+  "camera": {
+    "height_m": 1.5,
+    "pitch_deg": 4,
+    "hfov_deg": 52
+  },
+  "ground_polygon": [
+    {
+      "x": 0.02,
+      "y": 1.0
+    },
+    {
+      "x": 0.98,
+      "y": 1.0
+    },
+    {
+      "x": 0.8,
+      "y": 0.8
+    },
+    {
+      "x": 0.56,
+      "y": 0.56
+    },
+    {
+      "x": 0.47,
+      "y": 0.56
+    },
+    {
+      "x": 0.24,
+      "y": 0.76
+    }
+  ],
+  "subjects": [
+    {
+      "id": 0,
+      "keep": true,
+      "reason": "A real person walking on the path"
+    }
+  ],
+  "sky": {
+    "top": "#d9dee2",
+    "horizon": "#e6e9e6"
+  },
+  "ground_color": "#6b6447",
+  "layout": {
+    "axis_yaw_deg": 0,
+    "strips": [
+      {
+        "kind": "trees",
+        "offset_m": -15,
+        "width_m": 22,
+        "height_m": 17,
+        "color": "#3e5a34",
+        "repeat": {
+          "kind": "pine",
+          "spacing_m": 5,
+          "height_m": 0,
+          "color": "#3e5a34"
+        }
+      },
+      {
+        "kind": "grass",
+        "offset_m": -3.4,
+        "width_m": 3,
+        "height_m": 0,
+        "color": "#5f6a3d",
+        "repeat": {
+          "kind": "bush",
+          "spacing_m": 2.6,
+          "height_m": 1.1,
+          "color": "#55703a"
+        }
+      },
+      {
+        "kind": "dirt",
+        "offset_m": 0,
+        "width_m": 3.8,
+        "height_m": 0,
+        "color": "#7a6550",
+        "repeat": {
+          "kind": "none",
+          "spacing_m": 10,
+          "height_m": 0,
+          "color": "#7a6550"
+        }
+      },
+      {
+        "kind": "grass",
+        "offset_m": 3.4,
+        "width_m": 3,
+        "height_m": 0,
+        "color": "#67703e",
+        "repeat": {
+          "kind": "bush",
+          "spacing_m": 2.3,
+          "height_m": 1.2,
+          "color": "#8f8a3c"
+        }
+      },
+      {
+        "kind": "trees",
+        "offset_m": 15,
+        "width_m": 22,
+        "height_m": 17,
+        "color": "#3c5532",
+        "repeat": {
+          "kind": "pine",
+          "spacing_m": 5,
+          "height_m": 0,
+          "color": "#3c5532"
+        }
+      }
+    ]
+  }
+}

@@ -43,16 +43,24 @@ let hintTimer = 0;
 function dioramaPose(info) {
   // Stand a little behind and above where the photo was taken, so the world
   // reads as a small diorama floating in its own colors.
-  const zm = Math.min(4, Math.max(1.6, info.zMedian));
-  const target = new THREE.Vector3(0, 0, -1.1 * zm);
   const back = camera.aspect < 1 ? 1 + (1 - camera.aspect) * 1.1 : 1;   // tall screens step further back
-  const position = new THREE.Vector3(0.32 * zm, 0.36 * zm, 0.6 * zm).sub(target).multiplyScalar(back).add(target);
+  let target, position;
+  if (info.levelled) {
+    // Levelled worlds (Claude scene): look at the middle of the photo from above and behind.
+    const d = info.focus.length();
+    target = info.focus.clone();
+    position = new THREE.Vector3(0.25 * d, 0.9 * d, 0.7 * d).sub(target).multiplyScalar(back).add(target);
+  } else {
+    const zm = Math.min(4, Math.max(1.6, info.zMedian));
+    target = new THREE.Vector3(0, 0, -1.1 * zm);
+    position = new THREE.Vector3(0.32 * zm, 0.36 * zm, 0.6 * zm).sub(target).multiplyScalar(back).add(target);
+  }
   const m = new THREE.Matrix4().lookAt(position, target, new THREE.Vector3(0, 1, 0));
   return { position, quaternion: new THREE.Quaternion().setFromRotationMatrix(m), fov: 50, target, dist: position.distanceTo(target) };
 }
 
 function walkPose(info) {
-  return { position: new THREE.Vector3(0, 0, 0), quaternion: new THREE.Quaternion(), fov: info.walkFov(camera.aspect) };
+  return { position: new THREE.Vector3(0, 0, 0), quaternion: info.startQuat.clone(), fov: info.walkFov(camera.aspect) };
 }
 
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
@@ -104,14 +112,21 @@ function describe(info, name) {
     : 'No people found';
   $('#readout-name').textContent = name;
   $('#readout-meta').textContent = `${who} · ${info.width}×${info.height} · ${nf.format(Math.round(info.triangles / 1000))}k triangles`;
+  const cap = $('#readout-caption');
+  cap.hidden = !info.caption;
+  cap.textContent = info.caption ? `${info.caption}${info.measured ? ` · camera ${info.calib.h.toFixed(1)} m up` : ''}` : '';
+  const depth = $('#depth');
+  depth.disabled = info.measured;
+  depth.title = info.measured ? 'Depth is measured from the ground in this world' : '';
 }
 
-function setWorld({ scan, photo, name }, { autoWalk = false, keepCamera = false } = {}) {
-  const next = buildWorld(scan, photo, { strength });
+function setWorld({ scan, photo, name, sceneInfo = null }, { autoWalk = false, keepCamera = false } = {}) {
+  const next = buildWorld(scan, photo, { strength, scene: sceneInfo });
   if (world) { scene.remove(world.group); world.dispose(); }
   world = next;
-  current = { scan, photo, name };
+  current = { scan, photo, name, sceneInfo };
   scene.add(world.group);
+  scene.fog = world.fog;
   walk.bounds = world.info.bounds;
   walk.speed = world.info.speed;
   describe(world.info, name);
@@ -125,7 +140,7 @@ function setWorld({ scan, photo, name }, { autoWalk = false, keepCamera = false 
   camera.position.copy(pose.position); camera.quaternion.copy(pose.quaternion);
   camera.fov = pose.fov; camera.updateProjectionMatrix();
   orbit.target.copy(pose.target);
-  orbit.minDistance = pose.dist * 0.45; orbit.maxDistance = pose.dist * 1.8;
+  orbit.minDistance = pose.dist * 0.45; orbit.maxDistance = pose.dist * (world.info.surroundings ? 4 : 1.8);
   orbit.enabled = true; orbit.update();
   walk.enabled = false; $('#stick').hidden = true; hideHint();
   mode = 'diorama';
@@ -230,7 +245,7 @@ function getWorker() {
   return worker;
 }
 
-const STEPS = ['models', 'depth', 'detect', 'segment', 'build'];
+const STEPS = ['models', 'depth', 'detect', 'segment', 'claude', 'build'];
 const timings = [];
 function setStep(step, extra = {}) {
   timings.push([step, Math.round(performance.now())]);
@@ -243,6 +258,61 @@ function setStep(step, extra = {}) {
     $('#step-segment').textContent = n ? `Cutting out ${n} ${n === 1 ? 'subject' : 'subjects'}` : 'No people found, skipping cutouts';
   }
   if (step !== 'models') { $('#meter').hidden = true; }
+}
+
+// ---------------------------------------------------------------- smart scene (Claude)
+// When the site has an Anthropic key configured (see api/scene.js), Claude reads
+// a small copy of the photo: camera height and tilt, the ground, which "people"
+// are real, and what surrounds the camera beyond the frame.
+let smartAvailable = false;
+const SMART_KEY = 'pw-smart-scene';
+const smartOn = () => smartAvailable && $('#smart').checked;
+function syncPrivacyText() {
+  $('#privacy').textContent = smartOn()
+    ? 'A small copy of your photo is sent to Anthropic (Claude) to understand the scene. Everything else runs on your device.'
+    : 'Runs on your device. Your photo is never uploaded.';
+  $('#step-claude').hidden = !smartOn();
+}
+fetch('api/scene', { method: 'GET' })
+  .then((r) => (r.ok ? r.json() : { enabled: false }))
+  .then((j) => {
+    smartAvailable = Boolean(j.enabled);
+    $('#smart-wrap').hidden = !smartAvailable;
+    try { const v = localStorage.getItem(SMART_KEY); if (v !== null) $('#smart').checked = v === '1'; } catch {}
+    syncPrivacyText();
+  })
+  .catch(() => {});
+$('#smart').addEventListener('change', () => {
+  try { localStorage.setItem(SMART_KEY, $('#smart').checked ? '1' : '0'); } catch {}
+  syncPrivacyText();
+});
+
+async function askClaude(photo, subjects) {
+  // About 768 px on the long side is plenty for Claude and keeps the upload small.
+  const s = Math.min(1, 768 / Math.max(photo.width, photo.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(photo.width * s); c.height = Math.round(photo.height * s);
+  c.getContext('2d').drawImage(photo, 0, 0, c.width, c.height);
+  const image = c.toDataURL('image/jpeg', 0.82).split(',')[1];
+  const body = {
+    image, width: photo.width, height: photo.height,
+    subjects: subjects.map((sub, id) => ({ id, label: sub.label, box: [sub.box[0] / photo.width, sub.box[1] / photo.height, sub.box[2] / photo.width, sub.box[3] / photo.height] })),
+  };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const r = await fetch('api/scene', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.scene) throw new Error(j.error || `status ${r.status}`);
+    return j.scene;
+  } finally { clearTimeout(timer); }
+}
+
+// Drop detections Claude says aren't real people or animals (signs, posters...).
+function keepRealSubjects(scan, sceneInfo) {
+  if (!sceneInfo || !Array.isArray(sceneInfo.subjects)) return scan;
+  const drop = new Set(sceneInfo.subjects.filter((v) => v && v.keep === false).map((v) => v.id));
+  return { ...scan, subjects: scan.subjects.filter((_, i) => !drop.has(i)) };
 }
 function onDownload({ loaded, total, expected }) {
   $('#meter').hidden = false;
@@ -286,8 +356,15 @@ async function processFile(file) {
       pending.set('job', { resolve, reject, id: ++jobId });
       w.postMessage({ type: 'scan', rgba: rgba.buffer, width: W, height: H }, [rgba.buffer]);
     });
+    let sceneInfo = null, sceneError = '';
+    if (smartOn()) {
+      setStep('claude');
+      try { sceneInfo = await askClaude(photo, scan.subjects); }
+      catch (e) { sceneError = e.name === 'AbortError' ? 'Claude took too long' : e.message; }
+    }
     setStep('build'); await frame(); await frame();
-    setWorld({ scan, photo, name: file.name || 'your photo' }, { autoWalk: true });
+    setWorld({ scan: keepRealSubjects(scan, sceneInfo), photo, name: file.name || 'your photo', sceneInfo }, { autoWalk: true });
+    if (sceneError) toast(`Built the world without Claude (${sceneError}).`);
     timings.push(['ready', Math.round(performance.now())]);
     $('#busy').hidden = true;
   } catch (err) {
@@ -318,14 +395,16 @@ window.addEventListener('paste', (e) => {
 
 // ---------------------------------------------------------------- sample world
 async function loadSample() {
-  const [img, buf] = await Promise.all([
+  const [img, buf, sceneInfo] = await Promise.all([
     new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = 'sample/forest-path.jpg'; }),
     fetch('sample/forest-path.scan').then(r => { if (!r.ok) throw new Error('missing sample'); return r.arrayBuffer(); }),
+    // A saved scene description, so the sample shows the surroundings without an API call.
+    fetch('sample/forest-path.scene.json').then(r => (r.ok ? r.json() : null)).catch(() => null),
   ]);
   const scan = decodeScan(buf);
   const photo = document.createElement('canvas'); photo.width = scan.width; photo.height = scan.height;
   photo.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0, scan.width, scan.height);
-  setWorld({ scan, photo, name: 'forest-path.jpg' });
+  setWorld({ scan: keepRealSubjects(scan, sceneInfo), photo, name: 'forest-path.jpg', sceneInfo });
 }
 loadSample().catch(() => toast('The sample world did not load. You can still use your own photo.'));
 
