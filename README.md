@@ -9,11 +9,14 @@ Everything runs in the visitor's browser by default. No API keys, no cost per ph
 - level the camera (a traffic camera pointing down no longer gives a tilted world),
 - measure depth in metres from the ground,
 - drop false "people" (sign pictograms, drivers inside cars, posters),
+- build every car, truck and bus as a 3D model (see below),
 - build simple 3D surroundings beyond the frame: the road or path continues, with grass, hedges, trees, lamp posts and buildings, so turning around shows a believable place instead of an empty backdrop. It is stylized, not photoreal: Claude describes the place, it does not paint pixels.
 
 It costs well under a tenth of a cent per photo with Claude Haiku 5.5. When Smart scene is on, the photo is sent to Anthropic. Visitors can turn it off with the toggle.
 
-**3D cars (optional, uses fal.ai).** With a fal.ai key set, every car, truck, bus, motorbike or bicycle in the photo (up to 4) is sent to Meta's SAM 3D Objects model on fal.ai, which returns a full 3D model of it, including the sides you can't see. The app lines the model up with the photo (it searches the angle whose outline and colors best match) and swaps it in as soon as you move. Before it arrives, and when no key is set, the vehicle is a relief: the photo pushed out by its own depth, which looks right from near where the photo was taken and stretched from the side. fal.ai lists the model at $0.02 per unit. The photo and the vehicle outlines go to fal.ai only when the photo has a vehicle and the toggle is on.
+**3D cars from Claude (with Smart scene).** Claude also describes each vehicle: body style, make and model, colors, size, which way it faces, the shape of its side profile, where the wheels are, and its rear lights. The app builds that shape in 3D, lines it up with the car in the photo, and paints it with the photo wherever the photo saw it. Cars are symmetric, so the side the photo didn't see gets the mirrored pixels of the side it did see. The rest (usually the back) keeps the modelled paint, glass, lights and plate, with the paint color measured from the photo. It is a believable stand-in, not a scan: the back is Claude's best description of that model, not its real look.
+
+**3D cars from SAM 3D (optional, uses fal.ai).** With a fal.ai key set, every car, truck, bus, motorbike or bicycle in the photo (up to 4) is sent to Meta's SAM 3D Objects model on fal.ai, which returns a full 3D model of it, including the sides you can't see. The app lines the model up with the photo (it searches the angle whose outline and colors best match) and swaps it in as soon as you move. When it arrives it replaces the Claude-built car. Without Smart scene or a fal.ai key, the vehicle is a relief: the photo pushed out by its own depth, which looks right from near where the photo was taken and stretched from the side. fal.ai lists the model at $0.02 per unit. The photo and the vehicle outlines go to fal.ai only when the photo has a vehicle and the toggle is on.
 
 ## Run it locally
 
@@ -57,7 +60,7 @@ It's a static site with no build step.
    - Where depth jumps (an edge), the mesh splits. A second, blurred layer sits behind every edge so you see more scene instead of a hole.
    - Split edges stay in place while you stand where the photo was taken, so the first view matches the photo exactly. They fade out as soon as you move.
    - People are removed from the background, the gap is filled (smooth color plus texture cloned from beside them, slightly darkened like a shadow), and each person stands as a cutout at their own depth.
-4. **3D cars** (`api/objects.js`, `js/objects3d.js`): the photo and one mask per vehicle go to SAM 3D Objects through fal's queue; the browser polls until the model is ready. The model comes back upright at unit size, so the app tries headings (and camera tilts when Claude hasn't measured one) and keeps the one whose projected outline and colors match the photo best, then scales it so its front sits at the photo's depth. It fades in over the relief as soon as the camera leaves the photo's viewpoint, so the first view is still exactly the photo.
+4. **3D cars.** With Smart scene, `js/carmodel.js` builds each vehicle from Claude's description (a lofted body from the side profile, glass, wheels, lights, plates), `js/objects3d.js` finds the heading and size that match its outline in the photo, and a shader paints it with the photo (direct where seen, mirrored on the other side). With fal.ai (`api/objects.js`): the photo and one mask per vehicle go to SAM 3D Objects through fal's queue; the browser polls until the model is ready. The model comes back upright at unit size, so the app tries headings (and camera tilts when Claude hasn't measured one) and keeps the one whose projected outline and colors match the photo best, then scales it so its front sits at the photo's depth. It fades in over the relief as soon as the camera leaves the photo's viewpoint, so the first view is still exactly the photo.
 5. **Smart scene** (`api/scene.js`, `js/surroundings.js`): Claude returns JSON with camera height, tilt and field of view, an outline of the flat ground, a verdict per detected person, sky and ground colors, and a cross-section of the place (bands like sidewalk, road, grass, hedge, trees, buildings, with lamp posts or trees lined up along them). Ground pixels are fitted to the true ground plane to turn relative depth into metres. Nothing procedural is placed where it would cover the photo.
 6. **Viewer.** three.js renders it. Diorama mode orbits the world from outside. Walk mode puts you where the photographer stood.
 
@@ -73,7 +76,8 @@ The models download once from Hugging Face (about 70 MB, or 90 MB on devices wit
 
 - A single photo only shows one side of everything. You can walk a few steps before stretched or blurry areas appear, so the walking area is limited on purpose (smaller for close-up portraits).
 - People are flat cutouts. From the side you see the same front view, not their back.
-- 3D cars are the model's best guess for the hidden sides. Small details (badges, plates, what's inside) can differ from the real car. If the model doesn't line up with the photo, the app keeps the relief and says so.
+- Claude-built cars are simple shapes. From the back they look like a clean model of the car, not a photo, and unusual shapes (classic or custom cars) are approximate.
+- SAM 3D cars are the model's best guess for the hidden sides. Small details (badges, plates, what's inside) can differ from the real car. If the model doesn't line up with the photo, the app keeps the relief and says so.
 - The space behind a person is guessed. Moving sideways shows a soft, blurry patch there.
 - Smart scene surroundings are simple shapes in matching colors. They follow Claude's estimate of the layout, so they may not line up exactly with the photo.
 - The first photo takes longer while the models download. On a slow, GPU-less test machine each photo then took about 20 to 40 seconds. A normal laptop should be faster.
@@ -90,7 +94,8 @@ js/fill.js          hole filling and image filters
 js/controls.js      walking controls (keys, drag, touch stick)
 js/scan-format.js   saves/loads a "scan" so the sample needs no AI
 js/surroundings.js  builds the 3D surroundings from Claude's description
-js/objects3d.js     lines a generated 3D model up with the photo
+js/carmodel.js      builds a 3D vehicle from Claude's description and paints it
+js/objects3d.js     lines a 3D model up with the photo
 api/scene.js        Vercel function that asks Claude about the photo
 api/objects.js      Vercel function that runs SAM 3D Objects on fal.ai
 sample/             the sample photo, its precomputed scan and scene description

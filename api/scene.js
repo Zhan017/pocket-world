@@ -16,7 +16,7 @@ const color = { type: 'string', description: 'Hex color like #7a8b5c' };
 const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['caption', 'scene_type', 'camera', 'ground_polygon', 'subjects', 'sky', 'ground_color', 'layout'],
+  required: ['caption', 'scene_type', 'camera', 'ground_polygon', 'subjects', 'vehicles', 'sky', 'ground_color', 'layout'],
   properties: {
     caption: { type: 'string', description: 'A short plain description of the place, under 12 words.' },
     scene_type: { type: 'string', enum: ['street', 'road', 'path', 'park', 'forest', 'beach', 'waterfront', 'plaza', 'field', 'mountain', 'indoor', 'other'] },
@@ -44,6 +44,36 @@ const SCHEMA = {
           id: { type: 'integer' },
           keep: { type: 'boolean', description: 'true for a real person, animal or vehicle physically in the scene. false for signs, pictograms, posters, statues, mannequins, screens, reflections, toy or pictured vehicles, and people fully inside vehicles.' },
           reason: { type: 'string' },
+        },
+      },
+    },
+    vehicles: {
+      type: 'array',
+      description: 'One entry per detected car, truck or bus you kept. The app builds a 3D model of it, so describe the whole vehicle, including the sides the photo does not show.',
+      items: {
+        type: 'object', additionalProperties: false,
+        required: ['id', 'body_style', 'make_model', 'body_color', 'roof_color', 'trim_color', 'wheel_color', 'length_m', 'width_m', 'height_m', 'heading_deg', 'taillight_style', 'profile', 'belt_h', 'axle_rear_t', 'axle_front_t', 'wheel_diameter_m', 'roundness'],
+        properties: {
+          id: { type: 'integer' },
+          body_style: { type: 'string', enum: ['sedan', 'hatchback', 'wagon', 'suv', 'crossover', 'coupe', 'convertible', 'pickup', 'van', 'minivan', 'bus', 'truck', 'other'] },
+          make_model: { type: 'string', description: 'Best guess of make and model, e.g. "Toyota Camry". Empty if unknown.' },
+          body_color: { ...color, description: 'Main paint color as it looks in this light.' },
+          roof_color: { ...color, description: 'Roof color (same as body unless two-tone).' },
+          trim_color: { ...color, description: 'Bumper, sill and wheel-arch plastic color (often near black, or the body color).' },
+          wheel_color: { ...color, description: 'Rim color.' },
+          length_m: { type: 'number' }, width_m: { type: 'number', description: 'Without mirrors.' }, height_m: { type: 'number' },
+          heading_deg: { type: 'number', description: 'Which way the front of the vehicle points, seen from the camera. 0 = front faces the camera, 180 = rear faces the camera, 90 = front points to the right of the image, -90 = to the left. Use in-between values for angled views.' },
+          taillight_style: { type: 'string', enum: ['corner', 'wide', 'vertical', 'light_bar'], description: 'Shape of the rear lights for this model: corner (separate lights at each corner), wide (long horizontal lights reaching toward the middle), vertical (tall narrow lights), light_bar (a strip joining the two lights).' },
+          profile: {
+            type: 'array',
+            description: 'Side silhouette of this model\'s top edge, from the rear bumper (t = 0) to the front bumper (t = 1). h is the height as a fraction of the full height (highest point of the roof = 1). 8 to 14 points with t increasing. part says what the stretch from this point to the next one is: body (boot, rear deck, bonnet), glass (rear window or windscreen), roof, or open (open cockpit or open load bed).',
+            items: { type: 'object', additionalProperties: false, required: ['t', 'h', 'part'], properties: { t: { type: 'number' }, h: { type: 'number' }, part: { type: 'string', enum: ['body', 'glass', 'roof', 'open'] } } },
+          },
+          belt_h: { type: 'number', description: 'Height of the bottom edge of the side windows, as a fraction of the full height.' },
+          axle_rear_t: { type: 'number', description: 'Rear wheel centre position along the length (0 = rear bumper, 1 = front bumper).' },
+          axle_front_t: { type: 'number', description: 'Front wheel centre position along the length.' },
+          wheel_diameter_m: { type: 'number', description: 'Outer tyre diameter.' },
+          roundness: { type: 'number', description: '0 = boxy (vans, modern SUVs) to 1 = very rounded (Beetle, classic sports cars).' },
         },
       },
     },
@@ -90,8 +120,9 @@ const SCHEMA = {
 
 const SYSTEM = `You read a single photo so a web app can turn it into a small 3D world the viewer can walk around in.
 The app already has relative depth for every pixel and cut-outs of detected people. You supply what it cannot measure:
-the camera height, tilt and field of view; where the flat ground is; which detected people, animals and vehicles are real; and a simple
-layout of what most likely surrounds the camera beyond the edges of the frame, including behind it.
+the camera height, tilt and field of view; where the flat ground is; which detected people, animals and vehicles are real; a
+description of each vehicle good enough to model it in 3D from every side; and a simple layout of what most likely surrounds the
+camera beyond the edges of the frame, including behind it.
 Use metres and degrees. Base the layout on what is visible and on how such places are normally built.
 Always give your best estimate, even when unsure.`;
 
@@ -141,7 +172,7 @@ Fill in every field of the schema for this photo.`;
       headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 2000,
+        max_tokens: 3000,
         system: SYSTEM,
         messages: [{ role: 'user', content: [
           { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image } },

@@ -283,7 +283,7 @@ const available = (path) => fetch(path, { method: 'GET' }).then((r) => (r.ok ? r
 Promise.all([available('api/scene'), available('api/objects')]).then(([a, b]) => {
   smartAvailable = a; objectsAvailable = b;
   $('#smart-wrap').hidden = !(a || b);
-  $('#smart-wrap').title = [a && 'Claude reads a small copy of your photo to level the camera and spot real people', b && 'cars, bikes and buses are rebuilt in full 3D'].filter(Boolean).join('. ') + '.';
+  $('#smart-wrap').title = [a && 'Claude reads a small copy of your photo to level the camera, spot real people and describe each car so it can be built in 3D', b && 'fal.ai rebuilds cars, bikes and buses in full 3D'].filter(Boolean).join('. ') + '.';
   try { const v = localStorage.getItem(SMART_KEY); if (v !== null) $('#smart').checked = v === '1'; } catch {}
   syncPrivacyText();
 });
@@ -317,6 +317,13 @@ async function askClaude(photo, subjects) {
 let objectsJob = 0;
 const gltfLoader = new GLTFLoader();
 const plural3d = { car: 'cars', truck: 'trucks', bus: 'buses', motorcycle: 'motorcycles', bicycle: 'bicycles' };
+// "3D car built" when Claude's description became a model, else nothing.
+function builtStatus(w) {
+  const built = w.info.objects.filter((o) => o.built);
+  if (!built.length) return '';
+  const noun = built.length === 1 ? (built[0].name || `The ${built[0].label}`) : `${built.length} ${new Set(built.map((o) => o.label)).size === 1 ? plural3d[built[0].label] || 'vehicles' : 'vehicles'}`;
+  return `${noun} built in 3D · step sideways to see ${built.length === 1 ? 'it' : 'them'}`;
+}
 function status3d(text) {
   const el = $('#readout-3d');
   el.hidden = !text; el.textContent = text || '';
@@ -373,18 +380,26 @@ async function build3dObjects(photo, forWorld) {
       if (fit && fit.iou >= 0.3) placed++;
       console.info('[3d] fit', list[k].label, fit && { iou: +fit.iou.toFixed(2), color: +fit.colorDiff.toFixed(2), size: +fit.size.toFixed(2) });
     }
-    status3d(placed ? `3D ${placed === 1 ? list[0].label : noun} ready · step sideways to see ${placed === 1 ? 'it' : 'them'}` : '');
-    if (!placed) toast('The 3D model did not line up with the photo, so the flat version stays.');
+    status3d(placed ? `3D ${placed === 1 ? list[0].label : noun} ready · step sideways to see ${placed === 1 ? 'it' : 'them'}` : builtStatus(forWorld));
+    if (!placed && !builtStatus(forWorld)) toast('The 3D model did not line up with the photo, so the flat version stays.');
   } catch (e) {
-    if (job === objectsJob) { status3d(''); toast(`3D objects failed (${e.message}).`); }
+    if (job === objectsJob) { status3d(builtStatus(forWorld)); toast(`3D objects failed (${e.message}).`); }
   }
 }
 
-// Drop detections Claude says aren't real (signs, posters, drivers inside cars...).
+// Drop detections Claude says aren't real (signs, posters, drivers inside cars...),
+// and hand each vehicle Claude's description of it so it can be built in 3D.
 function keepRealSubjects(scan, sceneInfo) {
-  if (!sceneInfo || !Array.isArray(sceneInfo.subjects)) return scan;
-  const drop = new Set(sceneInfo.subjects.filter((v) => v && v.keep === false).map((v) => v.id));
-  return { ...scan, subjects: scan.subjects.filter((_, i) => !drop.has(i)) };
+  if (!sceneInfo) return scan;
+  const verdicts = Array.isArray(sceneInfo.subjects) ? sceneInfo.subjects : [];
+  const drop = new Set(verdicts.filter((v) => v && v.keep === false).map((v) => v.id));
+  const vehicles = Array.isArray(sceneInfo.vehicles) ? sceneInfo.vehicles : [];
+  return {
+    ...scan,
+    subjects: scan.subjects
+      .map((s, i) => ({ ...s, vehicle: vehicles.find((v) => v && v.id === i) || null }))
+      .filter((_, i) => !drop.has(i)),
+  };
 }
 function onDownload({ loaded, total, expected }) {
   $('#meter').hidden = false;
@@ -436,7 +451,7 @@ async function processFile(file) {
     }
     setStep('build'); await frame(); await frame();
     setWorld({ scan: keepRealSubjects(scan, sceneInfo), photo, name: file.name || 'your photo', sceneInfo }, { autoWalk: true });
-    status3d('');
+    status3d(builtStatus(world));
     if (objectsOn() && world.info.objects.length) build3dObjects(photo, world);
     if (sceneError) toast(`Built the world without Claude (${sceneError}).`);
     timings.push(['ready', Math.round(performance.now())]);
