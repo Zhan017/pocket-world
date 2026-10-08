@@ -1,0 +1,27 @@
+<!doctype html><meta charset="utf-8"><body>
+<script type="module">
+import { encodeScan } from '../js/scan-format.js';
+const name = new URLSearchParams(location.search).get('img') || '../sample/forest-path.jpg';
+const img = new Image(); img.src = name; await img.decode();
+const s = Math.min(1, 1024 / Math.max(img.width, img.height));
+const W = Math.round(img.width * s), H = Math.round(img.height * s);
+const c = document.createElement('canvas'); c.width = W; c.height = H;
+const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, W, H);
+const rgba = ctx.getImageData(0, 0, W, H).data;
+const w = new Worker(new URL('../js/ai-worker.js', import.meta.url), { type: 'module' });
+window.__log = [];
+const t0 = performance.now();
+w.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === 'step') window.__log.push(m.step + ' @' + Math.round(performance.now() - t0) + (m.count != null ? ' n=' + m.count : ''));
+  if (m.type === 'result') {
+    const buf = encodeScan(m.scan);
+    let bin = ''; const u8 = new Uint8Array(buf);
+    for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    window.__results = { scan: btoa(bin), crossOriginIsolated, subjects: m.scan.subjects.map(s => ({label: s.label, score: s.score, box: s.box, crop: s.crop})), depth: [m.scan.depth.w, m.scan.depth.h], total: Math.round(performance.now() - t0) };
+    window.__done = true;
+  }
+  if (m.type === 'error') { window.__results = { error: m.message }; window.__done = true; }
+};
+w.postMessage({ type: 'scan', rgba: rgba.buffer, width: W, height: H }, [rgba.buffer]);
+</script>
