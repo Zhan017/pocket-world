@@ -13,6 +13,9 @@
 import * as THREE from 'three';
 import { pullPush, fillCloned, rankFilter, boxBlur, resample, percentile } from './fill.js';
 import { buildSurroundings } from './surroundings.js';
+import { samplePoints, fitObject } from './objects3d.js';
+
+const VEHICLES = new Set(['car', 'truck', 'bus', 'motorcycle', 'bicycle']);
 
 const GRID_LONG = 384;          // mesh vertices along the photo's long side
 const FOV_LONG_DEG = 65;        // assumed lens: a typical phone main camera
@@ -59,11 +62,11 @@ const skyFrag = /* glsl */`
   void main() { gl_FragColor = vec4(backdrop(normalize(vWorld - cameraPosition)), 1.0); }`;
 
 const cutoutFrag = /* glsl */`
-  uniform sampler2D map; varying vec2 vUv;
+  uniform sampler2D map; uniform float opacity; varying vec2 vUv;
   void main() {
     vec4 c = texture2D(map, vUv);
     if (c.a < 0.02) discard;
-    gl_FragColor = c;
+    gl_FragColor = vec4(c.rgb, c.a * opacity);
   }`;
 
 const shadowFrag = /* glsl */`
@@ -362,7 +365,11 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
   }
 
   // --- Subjects ------------------------------------------------------------
+  // People and pets become cutouts that turn to face you. Vehicles become a
+  // relief (the photo pushed out by its own depth), which a generated 3D
+  // model can replace later (attachModel).
   const subjects = [];
+  const objects = [];
   for (const s of scan.subjects) {
     const [x0, y0, cw, ch] = s.crop;
     let a = new Float32Array(cw * ch);
@@ -379,6 +386,43 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
     c.getContext('2d').putImageData(id, 0, 0);
     const dnS = subjectDn[scan.subjects.indexOf(s)];
     if (dnS == null) continue;
+    if (VEHICLES.has(s.label)) {
+      const t = texFrom(c); textures.push(t);
+      const step = Math.max(2, Math.round(Math.max(cw, ch) / 110));
+      const nx = Math.floor((cw - 1) / step) + 1, ny = Math.floor((ch - 1) / step) + 1;
+      const pos = new Float32Array(nx * ny * 3), uv = new Float32Array(nx * ny * 2);
+      const dnv = new Float32Array(nx * ny), al = new Uint8Array(nx * ny);
+      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+        const x = Math.min(cw - 1, i * step), y = Math.min(ch - 1, j * step), k = j * nx + i;
+        // Edge pixels often carry the background's depth; keep them near the object.
+        const d = Math.max(dnAt(x + x0, y + y0), dnS - 0.08);
+        const z = zOf(d) * 0.995;
+        pos[k * 3] = ((x + x0 - cx) / f) * z; pos[k * 3 + 1] = (-(y + y0 - cy) / f) * z; pos[k * 3 + 2] = -z;
+        uv[k * 2] = x / (cw - 1); uv[k * 2 + 1] = 1 - y / (ch - 1);
+        dnv[k] = d; al[k] = s.alpha[y * cw + x];
+      }
+      const idx = [];
+      for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
+        const a0 = j * nx + i, b0 = a0 + 1, c0 = a0 + nx, d0 = c0 + 1;
+        if (Math.max(al[a0], al[b0], al[c0], al[d0]) < 25) continue;
+        const span = Math.max(dnv[a0], dnv[b0], dnv[c0], dnv[d0]) - Math.min(dnv[a0], dnv[b0], dnv[c0], dnv[d0]);
+        if (span > 0.08) continue;
+        idx.push(a0, c0, b0, b0, c0, d0);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      geo.setIndex(idx);
+      const material = new THREE.ShaderMaterial({
+        vertexShader: worldVert, fragmentShader: cutoutFrag, transparent: true, depthWrite: true,
+        side: THREE.DoubleSide, uniforms: { map: { value: t }, opacity: { value: 1 } },
+      });
+      const relief = new THREE.Mesh(geo, material);
+      relief.renderOrder = 2;
+      content.add(relief);
+      objects.push({ label: s.label, box: s.box, crop: s.crop, alpha: s.alpha, relief, material, model: null });
+      continue;
+    }
     const zS = zOf(dnS) * 0.985;
     const wW = (cw / f) * zS, hW = (ch / f) * zS;
     const X = ((x0 + cw / 2 - cx) / f) * zS;
@@ -389,7 +433,7 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
     const t = texFrom(c); textures.push(t);
     const mesh = new THREE.Mesh(geo, new THREE.ShaderMaterial({
       vertexShader: worldVert, fragmentShader: cutoutFrag, transparent: true, depthWrite: false,
-      side: THREE.DoubleSide, uniforms: { map: { value: t } },
+      side: THREE.DoubleSide, uniforms: { map: { value: t }, opacity: { value: 1 } },
     }));
     mesh.renderOrder = 2;
     pivot.add(mesh);
@@ -479,6 +523,20 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
       edgeMat.visible = edgeMat.uniforms.opacity.value > 0.003;
     }
     content.worldToLocal(camLocal.copy(camera.position));
+    if (objects.length) {
+      // The photo's own pixels show while you stand where it was taken; step
+      // away and the generated 3D model takes over.
+      const moved = camera.position.length() / unit;
+      const fade = 1 - THREE.MathUtils.smoothstep(moved, 0.006, 0.08);
+      for (const ob of objects) {
+        if (!ob.model) continue;
+        ob.material.uniforms.opacity.value = fade;
+        ob.relief.visible = fade > 0.003;
+        // Cross-fade: the model only appears once you step away from the photo.
+        for (const m of ob.modelMats) { m.opacity = 1 - fade; m.transparent = fade > 0.003; m.depthWrite = true; }
+        ob.model.visible = fade < 0.997;
+      }
+    }
     for (const s of subjects) {
       const dx = camLocal.x - s.pivot.position.x, dz = camLocal.z - s.pivot.position.z;
       s.pivot.rotation.y = Math.atan2(dx, dz) - s.base;
@@ -493,13 +551,63 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
     if (surroundings) surroundings.dispose();
   }
 
+  /**
+   * Replace vehicle `i`'s relief with a generated 3D model (a loaded glTF scene).
+   * Returns the fit (with its silhouette match), or null if it didn't fit.
+   */
+  function attachModel(i, root) {
+    const ob = objects[i];
+    if (!ob || ob.model) return null;
+    const fit = fitObject({
+      points: samplePoints(root), alpha: ob.alpha, crop: ob.crop, f, cx, cy, photo: px, W,
+      depthAt: (u, v) => zOf(dnAt(u, v)), pitch, searchPitch: !scene,
+    });
+    if (!fit || fit.iou < 0.3) return fit;
+    const modelMats = [];
+    root.traverse((m) => {
+      if (!m.isMesh) return;
+      const old = m.material;
+      const map = old.map || null;
+      if (map) map.colorSpace = THREE.SRGBColorSpace;
+      const C = m.geometry.attributes.color;
+      if (C) {
+        // The vertex colors are sRGB values; three.js expects linear ones.
+        const c = new THREE.Color();
+        for (let i = 0; i < C.count; i++) {
+          c.setRGB(C.getX(i), C.getY(i), C.getZ(i), THREE.SRGBColorSpace);
+          C.setXYZ(i, c.r, c.g, c.b);
+        }
+        C.needsUpdate = true;
+      }
+      // Unlit: the model's colors already carry the photo's lighting.
+      const mat = new THREE.MeshBasicMaterial({ vertexColors: Boolean(C), map, side: THREE.DoubleSide, transparent: true, opacity: 0 });
+      m.material = mat;
+      modelMats.push(mat);
+      old.dispose?.();
+    });
+    const holder = new THREE.Group();
+    holder.matrixAutoUpdate = false;
+    holder.matrix.copy(fit.matrix);
+    holder.add(root);
+    content.add(holder);
+    ob.model = holder;
+    ob.modelMats = modelMats;
+    // The relief now sits on top as a fade-out layer.
+    ob.material.depthTest = false;
+    ob.material.depthWrite = false;
+    ob.relief.renderOrder = 3;
+    return fit;
+  }
+
   return {
-    group, update, dispose,
+    group, update, dispose, attachModel,
+    models: () => objects.filter((o) => o.model).map((o) => o.model),
     info: {
       width: W, height: H, near, far, zMedian, bounds, sphere, walkFov, startQuat, focus,
       speed: 0.42 * room * unit,
       triangles: A.tris + B.tris,
-      subjects: subjects.map(s => s.label),
+      subjects: [...subjects.map(s => s.label), ...objects.map(o => o.label)],
+      objects: objects.map((o) => ({ label: o.label, box: o.box, crop: o.crop, alpha: o.alpha })),
       measured: Boolean(calib), calib, levelled: Boolean(scene), surroundings: withSurroundings,
       caption: scene?.caption || '',
     },

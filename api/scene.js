@@ -42,7 +42,7 @@ const SCHEMA = {
         type: 'object', additionalProperties: false, required: ['id', 'keep', 'reason'],
         properties: {
           id: { type: 'integer' },
-          keep: { type: 'boolean', description: 'true only for a real living person or animal physically in the scene. false for signs, pictograms, posters, statues, mannequins, screens, reflections, or people fully inside vehicles.' },
+          keep: { type: 'boolean', description: 'true for a real person, animal or vehicle physically in the scene. false for signs, pictograms, posters, statues, mannequins, screens, reflections, toy or pictured vehicles, and people fully inside vehicles.' },
           reason: { type: 'string' },
         },
       },
@@ -90,7 +90,7 @@ const SCHEMA = {
 
 const SYSTEM = `You read a single photo so a web app can turn it into a small 3D world the viewer can walk around in.
 The app already has relative depth for every pixel and cut-outs of detected people. You supply what it cannot measure:
-the camera height, tilt and field of view; where the flat ground is; which detected "people" are real; and a simple
+the camera height, tilt and field of view; where the flat ground is; which detected people, animals and vehicles are real; and a simple
 layout of what most likely surrounds the camera beyond the edges of the frame, including behind it.
 Use metres and degrees. Base the layout on what is visible and on how such places are normally built.
 Always give your best estimate, even when unsure.`;

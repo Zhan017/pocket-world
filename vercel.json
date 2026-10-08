@@ -17,6 +17,9 @@
   "functions": {
     "api/scene.js": {
       "maxDuration": 30
+    },
+    "api/objects.js": {
+      "maxDuration": 30
     }
   }
 }

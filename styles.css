@@ -100,6 +100,7 @@ body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 #readout-meta { font-size: 13px; font-variant-numeric: tabular-nums; }
+.readout .status3d { font: 500 12px/1.3 var(--font-data); color: var(--accent); }
 .readout .caption { font-size: 12.5px; color: var(--ink-soft); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
 /* ---------- dock ---------- */

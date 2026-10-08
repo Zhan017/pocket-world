@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { buildWorld } from './world.js';
 import { WalkControls } from './controls.js';
 import { decodeScan } from './scan-format.js';
@@ -106,10 +107,10 @@ const nf = new Intl.NumberFormat('en');
 function describe(info, name) {
   const counts = {};
   for (const l of info.subjects) counts[l] = (counts[l] || 0) + 1;
-  const plural = { person: 'people', dog: 'dogs', cat: 'cats' };
+  const plural = { person: 'people', dog: 'dogs', cat: 'cats', car: 'cars', truck: 'trucks', bus: 'buses', motorcycle: 'motorcycles', bicycle: 'bicycles' };
   const who = Object.keys(counts).length
     ? Object.entries(counts).map(([l, n]) => `${n} ${n === 1 ? l : plural[l] || l + 's'}`).join(', ')
-    : 'No people found';
+    : 'Nothing cut out';
   $('#readout-name').textContent = name;
   $('#readout-meta').textContent = `${who} · ${info.width}×${info.height} · ${nf.format(Math.round(info.triangles / 1000))}k triangles`;
   const cap = $('#readout-caption');
@@ -255,7 +256,7 @@ function setStep(step, extra = {}) {
   });
   if (step === 'segment') {
     const n = extra.count ?? 0;
-    $('#step-segment').textContent = n ? `Cutting out ${n} ${n === 1 ? 'subject' : 'subjects'}` : 'No people found, skipping cutouts';
+    $('#step-segment').textContent = n ? `Cutting out ${n} ${n === 1 ? 'subject' : 'subjects'}` : 'Nothing to cut out';
   }
   if (step !== 'models') { $('#meter').hidden = true; }
 }
@@ -264,24 +265,28 @@ function setStep(step, extra = {}) {
 // When the site has an Anthropic key configured (see api/scene.js), Claude reads
 // a small copy of the photo: camera height and tilt, the ground, which "people"
 // are real, and what surrounds the camera beyond the frame.
-let smartAvailable = false;
+// When FAL_KEY is configured (see api/objects.js), cars and other vehicles are
+// also rebuilt as full 3D models with SAM 3D Objects.
+let smartAvailable = false, objectsAvailable = false;
 const SMART_KEY = 'pw-smart-scene';
-const smartOn = () => smartAvailable && $('#smart').checked;
+const toggleOn = () => $('#smart').checked;
+const smartOn = () => smartAvailable && toggleOn();
+const objectsOn = () => objectsAvailable && toggleOn();
 function syncPrivacyText() {
-  $('#privacy').textContent = smartOn()
-    ? 'A small copy of your photo is sent to Anthropic (Claude) to understand the scene. Everything else runs on your device.'
+  const to = [smartOn() && 'Anthropic (to understand the scene)', objectsOn() && 'fal.ai (only if it shows a car, to build the car in 3D)'].filter(Boolean);
+  $('#privacy').textContent = to.length
+    ? `A copy of your photo is sent to ${to.join(' and ')}. Everything else runs on your device.`
     : 'Runs on your device. Your photo is never uploaded.';
   $('#step-claude').hidden = !smartOn();
 }
-fetch('api/scene', { method: 'GET' })
-  .then((r) => (r.ok ? r.json() : { enabled: false }))
-  .then((j) => {
-    smartAvailable = Boolean(j.enabled);
-    $('#smart-wrap').hidden = !smartAvailable;
-    try { const v = localStorage.getItem(SMART_KEY); if (v !== null) $('#smart').checked = v === '1'; } catch {}
-    syncPrivacyText();
-  })
-  .catch(() => {});
+const available = (path) => fetch(path, { method: 'GET' }).then((r) => (r.ok ? r.json() : {})).then((j) => Boolean(j.enabled)).catch(() => false);
+Promise.all([available('api/scene'), available('api/objects')]).then(([a, b]) => {
+  smartAvailable = a; objectsAvailable = b;
+  $('#smart-wrap').hidden = !(a || b);
+  $('#smart-wrap').title = [a && 'Claude reads a small copy of your photo to level the camera and spot real people', b && 'cars, bikes and buses are rebuilt in full 3D'].filter(Boolean).join('. ') + '.';
+  try { const v = localStorage.getItem(SMART_KEY); if (v !== null) $('#smart').checked = v === '1'; } catch {}
+  syncPrivacyText();
+});
 $('#smart').addEventListener('change', () => {
   try { localStorage.setItem(SMART_KEY, $('#smart').checked ? '1' : '0'); } catch {}
   syncPrivacyText();
@@ -308,7 +313,74 @@ async function askClaude(photo, subjects) {
   } finally { clearTimeout(timer); }
 }
 
-// Drop detections Claude says aren't real people or animals (signs, posters...).
+// ---------------------------------------------------------------- 3D objects (SAM 3D)
+let objectsJob = 0;
+const gltfLoader = new GLTFLoader();
+const plural3d = { car: 'cars', truck: 'trucks', bus: 'buses', motorcycle: 'motorcycles', bicycle: 'bicycles' };
+function status3d(text) {
+  const el = $('#readout-3d');
+  el.hidden = !text; el.textContent = text || '';
+}
+function maskPng(W, H, obj) {
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  const [x0, y0, cw, ch] = obj.crop;
+  const id = g.getImageData(x0, y0, cw, ch);
+  for (let i = 0; i < cw * ch; i++) if (obj.alpha[i] > 127) { id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = 255; }
+  g.putImageData(id, x0, y0);
+  return c.toDataURL('image/png').split(',')[1];
+}
+async function objectsApi(body) {
+  const r = await fetch('api/objects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `status ${r.status}`);
+  return j;
+}
+// Runs in the background after the world is shown: send the photo and one mask
+// per vehicle, wait for the models, then swap them in.
+async function build3dObjects(photo, forWorld) {
+  const job = ++objectsJob;
+  const list = forWorld.info.objects
+    .map((o, i) => ({ ...o, i, area: (o.box[2] - o.box[0]) * (o.box[3] - o.box[1]) }))
+    .sort((a, b) => b.area - a.area).slice(0, 4);
+  if (!list.length) return;
+  const noun = list.length === 1 ? list[0].label : (plural3d[list[0].label] || 'vehicles');
+  status3d(`Building 3D ${list.length === 1 ? noun : list.length + ' ' + noun}…`);
+  try {
+    const image = photo.toDataURL('image/jpeg', 0.9).split(',')[1];
+    const masks = list.map((o) => maskPng(photo.width, photo.height, o));
+    const sub = await objectsApi({ action: 'submit', image, masks });
+    const t0 = performance.now();
+    let result = null;
+    while (!result) {
+      await new Promise((r) => setTimeout(r, 3000));
+      if (job !== objectsJob || world !== forWorld) return;
+      if (performance.now() - t0 > 6 * 60e3) throw new Error('it took too long');
+      const st = await objectsApi({ action: 'poll', status_url: sub.status_url, response_url: sub.response_url });
+      if (st.status === 'COMPLETED') result = st.result;
+      else status3d(`Building 3D ${noun}… ${st.status === 'IN_QUEUE' ? 'waiting in line' : 'modelling'}`);
+    }
+    const urls = list.length > 1 && result.individual_glbs?.length ? result.individual_glbs : [result.model_glb];
+    let placed = 0;
+    for (let k = 0; k < list.length; k++) {
+      const meta = (result.metadata || []).find((m) => m.object_index === k);
+      const url = urls[k] ?? urls[meta?.object_index ?? -1];
+      if (!url) continue;
+      const gltf = await gltfLoader.loadAsync(url);
+      if (job !== objectsJob || world !== forWorld) return;
+      const fit = forWorld.attachModel(list[k].i, gltf.scene);
+      if (fit && fit.iou >= 0.3) placed++;
+      console.info('[3d] fit', list[k].label, fit && { iou: +fit.iou.toFixed(2), color: +fit.colorDiff.toFixed(2), size: +fit.size.toFixed(2) });
+    }
+    status3d(placed ? `3D ${placed === 1 ? list[0].label : noun} ready · step sideways to see ${placed === 1 ? 'it' : 'them'}` : '');
+    if (!placed) toast('The 3D model did not line up with the photo, so the flat version stays.');
+  } catch (e) {
+    if (job === objectsJob) { status3d(''); toast(`3D objects failed (${e.message}).`); }
+  }
+}
+
+// Drop detections Claude says aren't real (signs, posters, drivers inside cars...).
 function keepRealSubjects(scan, sceneInfo) {
   if (!sceneInfo || !Array.isArray(sceneInfo.subjects)) return scan;
   const drop = new Set(sceneInfo.subjects.filter((v) => v && v.keep === false).map((v) => v.id));
@@ -364,6 +436,8 @@ async function processFile(file) {
     }
     setStep('build'); await frame(); await frame();
     setWorld({ scan: keepRealSubjects(scan, sceneInfo), photo, name: file.name || 'your photo', sceneInfo }, { autoWalk: true });
+    status3d('');
+    if (objectsOn() && world.info.objects.length) build3dObjects(photo, world);
     if (sceneError) toast(`Built the world without Claude (${sceneError}).`);
     timings.push(['ready', Math.round(performance.now())]);
     $('#busy').hidden = true;
@@ -410,3 +484,4 @@ loadSample().catch(() => toast('The sample world did not load. You can still use
 
 // For automated checks.
 window.__pw = { timings, get mode() { return mode; }, get world() { return world; }, setMode, processFile, camera, walk, orbit, renderer, scene };
+window.__THREE = THREE;

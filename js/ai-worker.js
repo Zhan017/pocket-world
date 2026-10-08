@@ -13,8 +13,9 @@ const MODELS = {
   detect: 'onnx-community/dfine_s_obj2coco-ONNX',
   segment: 'onnx-community/EdgeTAM-ONNX',
 };
-const SUBJECT_LABELS = new Set(['person', 'dog', 'cat']);
-const MAX_SUBJECTS = 8;
+const SUBJECT_LABELS = new Set(['person', 'dog', 'cat', 'car', 'truck', 'bus', 'motorcycle', 'bicycle']);
+const VEHICLES = new Set(['car', 'truck', 'bus', 'motorcycle', 'bicycle']);
+const MAX_SUBJECTS = 10;
 
 let depthPipe = null, detPipe = null, samModel = null, samProc = null, loading = null;
 let expected = 69e6;   // bytes to download on first use; updated once we know the device
@@ -98,6 +99,17 @@ async function scan({ rgba, width, height }) {
     .sort((a, b) => b.score - a.score);
   const kept = [];
   for (const c of cands) if (!kept.some(k => iou(k.box, c.box) > 0.6)) kept.push(c);
+  // A "person" sitting inside a vehicle (a driver) belongs to the vehicle.
+  const vehicles = kept.filter((k) => VEHICLES.has(k.label));
+  const inside = (p, v) => {
+    const ix = Math.max(0, Math.min(p.box[2], v.box[2]) - Math.max(p.box[0], v.box[0]));
+    const iy = Math.max(0, Math.min(p.box[3], v.box[3]) - Math.max(p.box[1], v.box[1]));
+    const area = (p.box[2] - p.box[0]) * (p.box[3] - p.box[1]);
+    return area > 0 && (ix * iy) / area > 0.8 && p.box[3] < v.box[3] - 0.15 * (v.box[3] - v.box[1]);
+  };
+  for (let i = kept.length - 1; i >= 0; i--) {
+    if (kept[i].label === 'person' && vehicles.some((v) => inside(kept[i], v))) kept.splice(i, 1);
+  }
   cands = kept
     .sort((a, b) => (b.box[2] - b.box[0]) * (b.box[3] - b.box[1]) - (a.box[2] - a.box[0]) * (a.box[3] - a.box[1]))
     .slice(0, MAX_SUBJECTS);
