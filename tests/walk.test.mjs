@@ -3,19 +3,28 @@ import assert from 'node:assert/strict';
 import { walkStep } from '../js/walk.js';
 
 // A tiny world for the callbacks: flat ground at y = 0 for |x|, |z| < 50,
-// plus optional boxes {x0, x1, z0, z1, top} standing on it.
-function world(boxes = [], groundY = 0) {
+// plus optional boxes {x0, x1, z0, z1, top} standing on it, and slanted walls
+// {a, b, c, top}, solid where a*x + b*z >= c.
+function world(boxes = [], groundY = 0, slants = []) {
   const boxAt = (x, z) => boxes.find((b) => x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1);
+  const slantAt = (x, z) => slants.find((s) => s.a * x + s.b * z >= s.c);
   const floorAt = (x, z, fromY) => {
     if (Math.abs(x) > 50 || Math.abs(z) > 50) return null;
-    const b = boxAt(x, z);
+    const b = boxAt(x, z) || slantAt(x, z);
     if (b && b.top <= fromY) return b.top;
     return groundY <= fromY ? groundY : null;
   };
   const hitAhead = (x, y, z, ux, uz, far) => {
     for (let d = 0.01; d <= far; d += 0.01) {
-      const b = boxAt(x + ux * d, z + uz * d);
-      if (b && b.top > y) return d;
+      const px = x + ux * d, pz = z + uz * d;
+      const b = boxAt(px, pz);
+      if (b && b.top > y) {
+        const bx = x + ux * (d - 0.01);
+        const xFace = bx < b.x0 || bx > b.x1;
+        return { distance: d, nx: xFace ? 1 : 0, nz: xFace ? 0 : 1 };
+      }
+      const s = slantAt(px, pz);
+      if (s && s.top > y) return { distance: d, nx: s.a, nz: s.b };
     }
     return null;
   };
@@ -61,4 +70,33 @@ test('steps down a kerb but refuses a big drop', () => {
 test('no move means no change', () => {
   const w = world();
   assert.deepEqual(walkStep({ x: 1, z: 2, foot: 0 }, 0, 0, w.floorAt, w.hitAhead), { x: 1, z: 2, foot: 0 });
+});
+
+test('slides along a slanted wall', () => {
+  const w = world([], 0, [{ a: 1, b: 1, c: 1, top: 2 }]);
+  const out = walkStep({ x: 0.25, z: 0.25, foot: 0 }, 0.3, 0.1, w.floorAt, w.hitAhead);
+  assert.ok(out.x > 0.25 && out.z < 0.25, JSON.stringify(out));
+  assert.ok(out.x + out.z < 0.7, JSON.stringify(out));
+});
+
+test('keeps the body clear of a wall passed at a glance', () => {
+  const w = world([{ x0: 1, x1: 2, z0: -50, z1: 50, top: 2 }]);
+  const out = walkStep({ x: 0.6, z: 0, foot: 0 }, 0.1, 0.3, w.floorAt, w.hitAhead);
+  assert.equal(out.x, 0.6);
+  assert.ok(Math.abs(out.z - 0.3) < 1e-9, JSON.stringify(out));
+});
+
+test('a body does not fit through a 0.36 m gap', () => {
+  const w = world([
+    { x0: -0.32, x1: -0.18, z0: -1.05, z1: -0.95, top: 2 },
+    { x0: 0.18, x1: 0.32, z0: -1.05, z1: -0.95, top: 2 },
+  ]);
+  assert.deepEqual(walkStep({ x: 0, z: -0.5, foot: 0 }, 0, -0.3, w.floorAt, w.hitAhead), { x: 0, z: -0.5, foot: 0 });
+});
+
+test('no dead band between climbing and blocking', () => {
+  const low = world([{ x0: 1, x1: 5, z0: -5, z1: 5, top: 0.355 }]);
+  assert.equal(walkStep({ x: 0.9, z: 0, foot: 0 }, 0.2, 0, low.floorAt, low.hitAhead).foot, 0.355);
+  const high = world([{ x0: 1, x1: 5, z0: -5, z1: 5, top: 0.37 }]);
+  assert.deepEqual(walkStep({ x: 0.9, z: 0, foot: 0 }, 0.2, 0, high.floorAt, high.hitAhead), { x: 0.9, z: 0, foot: 0 });
 });
