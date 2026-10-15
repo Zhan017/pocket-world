@@ -15,7 +15,7 @@ import { pullPush, fillCloned, rankFilter, boxBlur, resample, percentile } from 
 import { buildSurroundings } from './surroundings.js';
 import { samplePoints, fitObject } from './objects3d.js';
 import { buildCar, canBuild, photoDepth, matchPaint, carMaterial, carShadow } from './carmodel.js';
-import { buildPlanScene } from './scenebuild.js';
+import { buildPlanScene, surfaceTopAt } from './scenebuild.js';
 
 const VEHICLES = new Set(['car', 'truck', 'bus', 'motorcycle', 'bicycle']);
 
@@ -656,14 +656,26 @@ export function buildWorld(scan, photo, { strength = 1, scene = null, photoHi = 
     const car = buildCar(ob.vehicle);
     if (!car) return null;
     const heading = ((Number(ob.vehicle.heading_deg) || 0) * Math.PI) / 180;
-    const fit = fitObject({
+    let fit = fitObject({
       points: car.points, alpha: ob.alpha, crop: ob.crop, f, cx, cy, photo: px, W,
       depthAt: (u, v) => zOf(dnAt(u, v)), pitch, searchPitch: false,
       yawCenter: heading, yawSpan: (50 * Math.PI) / 180,
     });
+    let matrix = null;
+    if (fit && fit.iou >= 0.3 && (calib || !planMode)) {
+      matrix = restOnGround(fit.matrix, car.points);
+    } else if (planMode && Array.isArray(ob.vehicle.at)) {
+      // The photo can't place it in metres: stand it where Claude's plan says,
+      // on the plan's ground, turned to its heading (camera frame = levelled turned by the tilt).
+      const [r, fw] = ob.vehicle.at;
+      const tilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitch);
+      const pos = new THREE.Vector3(r, surfaceTopAt(scene, r, fw) - Number(scene.camera.height_m), -fw).applyQuaternion(tilt);
+      const rot = tilt.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading));
+      matrix = new THREE.Matrix4().compose(pos, rot, new THREE.Vector3(1, 1, 1));
+      fit = { ...(fit || { iou: 0, yaw: heading }), fromPlan: true };
+    }
     ob.carFit = fit;
-    if (!fit || fit.iou < 0.3) { car.geometry.dispose(); return fit; }
-    const matrix = restOnGround(fit.matrix, car.points);
+    if (!matrix) { car.geometry.dispose(); return fit; }
     const cam = { f, cx, cy, W, H };
     const depth = photoDepth(car.geometry, matrix, cam);
     // The cutout, pulled in a little so background pixels at its edge don't paint the car.
@@ -745,7 +757,7 @@ export function buildWorld(scan, photo, { strength = 1, scene = null, photoHi = 
       speed: planMode ? 2 : 0.42 * room * unit,
       triangles: A.tris + B.tris,
       subjects: [...subjects.map(s => s.label), ...objects.map(o => o.label)],
-      objects: objects.map((o) => ({ label: o.label, box: o.box, crop: o.crop, alpha: o.alpha, built: o.modelKind === 'claude', name: (o.vehicle && String(o.vehicle.make_model || '').slice(0, 40)) || '', fit: o.carFit ? { iou: o.carFit.iou, yaw: o.carFit.yaw } : null })),
+      objects: objects.map((o) => ({ label: o.label, box: o.box, crop: o.crop, alpha: o.alpha, built: o.modelKind === 'claude', name: (o.vehicle && String(o.vehicle.make_model || '').slice(0, 40)) || '', fit: o.carFit ? { iou: o.carFit.iou, yaw: o.carFit.yaw, fromPlan: Boolean(o.carFit.fromPlan) } : null })),
       measured: Boolean(calib), calib, levelled: Boolean(scene), surroundings: withSurroundings,
       plan: planMode,
       caption: scene?.caption || '',
