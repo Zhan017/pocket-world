@@ -24,6 +24,8 @@ for (const [env, file] of [['ANTHROPIC_API_KEY', 'anthropic_key'], ['WLT_API_KEY
   try { process.env[env] = fs.readFileSync(path.join(os.homedir(), '.config/pocket-world', file), 'utf8').trim(); } catch {}
 }
 
+if (!process.env.CLAUDE_WORLD) process.env.CLAUDE_WORLD = '1';   // local work has Claude World on
+
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
   '.json': 'application/json', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
@@ -52,12 +54,20 @@ async function runApi(name, req, res) {
 }
 
 http.createServer((req, res) => {
+  // This server holds real API keys: only answer requests addressed to localhost
+  // (a foreign Host header is a DNS-rebinding attempt).
+  if (!/^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(req.headers.host || '')) { res.statusCode = 403; return res.end('Forbidden host'); }
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
   res.setHeader('Cache-Control', 'no-cache');
   const url = new URL(req.url, 'http://localhost');
   const api = /^\/api\/([^/]+)$/.exec(url.pathname);
-  if (api) return runApi(api[1], req, res);
+  if (api) {
+    if (req.method === 'POST' && !(req.headers['content-type'] || '').includes('application/json')) {
+      res.statusCode = 415; return res.end(JSON.stringify({ error: 'Send application/json.' }));
+    }
+    return runApi(api[1], req, res);
+  }
   let rel;
   try { rel = path.normalize(decodeURIComponent(url.pathname)); } catch { res.statusCode = 400; return res.end(); }
   if (rel.includes('\0')) { res.statusCode = 400; return res.end(); }

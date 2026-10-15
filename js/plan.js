@@ -140,7 +140,8 @@ export function validatePlan(raw) {
 
   const vehicles = list(raw.vehicles, LIMITS.vehicles)
     .filter((v) => v && typeof v === 'object' && Number.isInteger(Number(v.id)))
-    .map((v) => ({ ...v, id: Number(v.id), at: point(v.at, R) }));
+    .map((v) => ({ ...v, id: Number(v.id), at: point(v.at, R) }))
+    .filter((v, i, all) => all.findIndex((w) => w.id === v.id) === i);
 
   const overlays = list(raw.overlays, LIMITS.overlays)
     .filter((o) => o && OVERLAY_KINDS.includes(o.kind))
@@ -169,6 +170,8 @@ export function validatePlan(raw) {
 export function applyPatch(plan, patch) {
   if (!plan || !patch || typeof patch !== 'object' || Array.isArray(patch)) return plan;
   const remove = new Set(Array.isArray(patch.remove) ? patch.remove.map(String) : []);
+  // vehicles are labelled v<id> in the renders
+  for (const r of [...remove]) { const m = /^v(\d+)$/.exec(r); if (m) remove.add(m[1]); }
   const merge = (category, items, upd) => {
     const out = items.filter((e) => !remove.has(String(e.id)));
     for (const u of Array.isArray(upd) ? upd : []) {

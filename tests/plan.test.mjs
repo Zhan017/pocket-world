@@ -141,3 +141,24 @@ test('a broken replacement keeps the original', () => {
   assert.deepEqual(next.surfaces.map((s) => s.id), ['s1', 's2']);
   assert.deepEqual(next.surfaces[0].polygon, p.surfaces[0].polygon);
 });
+
+test('dedupes vehicle ids', () => {
+  const raw = base();
+  raw.vehicles = [{ id: 0, body_style: 'suv', at: [1, 20] }, { id: 0, body_style: 'sedan', at: [2, 30] }, { id: 0, body_style: 'van', at: [3, 40] }];
+  const p = validatePlan(raw);
+  assert.equal(p.vehicles.length, 1);
+  assert.equal(p.vehicles[0].body_style, 'suv');
+});
+
+test('removes a vehicle by its v<id> label', () => {
+  const raw = base();
+  raw.vehicles = [{ id: 0, body_style: 'suv', at: [1, 20] }];
+  const p = validatePlan(raw);
+  assert.equal(p.vehicles.length, 1);
+  const next = applyPatch(p, { notes: 'x', done: false, materials: [], surfaces: [], markings: [], objects: [], vehicles: [], remove: ['v0'] });
+  assert.notEqual(next, p);
+  assert.equal(next.vehicles.length, 0);
+  assert.equal(next.surfaces.length, p.surfaces.length);
+  assert.equal(next.markings.length, p.markings.length);
+  assert.equal(next.objects.length, p.objects.length);
+});

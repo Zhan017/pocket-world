@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -52,4 +53,19 @@ test('survives a NUL byte in the path', () => withServer(async (base) => {
   assert.equal(r.status, 400);
   const ok = await fetch(`${base}/`);
   assert.equal(ok.status, 200);
+}));
+
+test('refuses a foreign Host', () => withServer(async (base) => {
+  const port = new URL(base).port;
+  const status = await new Promise((resolve, reject) => {
+    const q = http.request({ host: '127.0.0.1', port, path: '/', headers: { Host: 'evil.example' } }, (r) => { r.resume(); resolve(r.statusCode); });
+    q.on('error', reject); q.end();
+  });
+  assert.equal(status, 403);
+  assert.equal((await fetch(`${base}/`)).status, 200);
+}));
+
+test('refuses a non-JSON API POST', () => withServer(async (base) => {
+  const r = await fetch(`${base}/api/scene`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' });
+  assert.equal(r.status, 415);
 }));

@@ -374,6 +374,10 @@ async function buildWithClaude(job, { scan, photo, photoHi, name }) {
     cancelled: () => job !== planJob,
   });
   if (job !== planJob) return;
+  if (out.stopped === 'error') {
+    // a half-built world must not stay on screen: go back to the last good plan
+    try { setWorld({ scan: keepRealSubjects(scan, out.plan), photo, photoHi, name, sceneInfo: out.plan }, { keepCamera: true }); } catch {}
+  }
   planState = out.stopped === 'error' ? 'failed' : 'done';
   status3d(out.stopped === 'done' ? `Claude is happy with the place after ${out.rounds} ${out.rounds === 1 ? 'round' : 'rounds'}` : `Claude checked the place ${out.rounds} ${out.rounds === 1 ? 'time' : 'times'}`);
   if (out.error) toast(`Claude stopped correcting the place (${out.error.message}).`);
@@ -503,11 +507,15 @@ async function processFile(file) {
     const photo = document.createElement('canvas'); photo.width = W; photo.height = H;
     const ctx = photo.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(bitmap, 0, 0, W, H);
-    // Claude and the plan's projected texture get up to 2576 px (Opus's high-resolution limit).
-    const sHi = Math.min(1, 2576 / Math.max(bitmap.width, bitmap.height));
-    const photoHi = document.createElement('canvas');
-    photoHi.width = Math.max(8, Math.round(bitmap.width * sHi)); photoHi.height = Math.max(8, Math.round(bitmap.height * sHi));
-    photoHi.getContext('2d').drawImage(bitmap, 0, 0, photoHi.width, photoHi.height);
+    // Claude and the plan's projected texture get up to 2576 px (Opus's high-resolution limit);
+    // only the plan flow needs it.
+    let photoHi = null;
+    if (PLAN_MODE && smartOn()) {
+      const sHi = Math.min(1, 2576 / Math.max(bitmap.width, bitmap.height));
+      photoHi = document.createElement('canvas');
+      photoHi.width = Math.max(8, Math.round(bitmap.width * sHi)); photoHi.height = Math.max(8, Math.round(bitmap.height * sHi));
+      photoHi.getContext('2d').drawImage(bitmap, 0, 0, photoHi.width, photoHi.height);
+    }
     bitmap.close?.();
     const rgba = ctx.getImageData(0, 0, W, H).data;
     setStep('models');

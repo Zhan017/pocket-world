@@ -249,7 +249,7 @@ Cover about extent_m (normally 60) metres around the camera, including behind it
 Accuracy
 Visible things matter most: line their edges up with the photo. Use real sizes: lanes about 3.5 m, curbs 0.15 m, crosswalk stripes 0.4 to 0.6 m wide, sign plates 0.6 to 0.9 m, cars about 4.3 m long.
 Use short stable ids (s1, m1, o1, mat-asphalt) and keep them when you revise. Vehicles keep the numeric id they were given.
-At most 30 surfaces, 40 markings and 120 objects.`;
+At most 24 materials, 30 surfaces, 40 markings and 120 objects.`;
 
 function planPrompt(W, H, subjects) {
   const list = subjects.length
@@ -321,7 +321,7 @@ async function callClaude(key, { content, schema, maxTokens }) {
         messages: [{ role: 'user', content }],
       }),
     });
-    data = await r.json().catch(() => null);
+    data = await r.json().catch((e) => { if (e.name === 'AbortError') throw e; return null; });
     if (!r.ok || !data) throw fail(502, data?.error?.message || `Claude API error ${r.status}`);
   } catch (e) {
     if (e.status) throw e;
@@ -338,6 +338,7 @@ async function callClaude(key, { content, schema, maxTokens }) {
 
 async function planAction(res, key, ip, body) {
   const isPlan = body.action === 'plan';
+  if (!process.env.CLAUDE_WORLD) return send(res, 404, { error: 'Claude World is not enabled on this site.' });
   if (rateLimited(ip, body.action, isPlan ? PLAN_LIMIT : REFINE_LIMIT)) {
     return send(res, 429, { error: isPlan ? 'Too many photos in the last hour. Try again later.' : 'Too many corrections in the last hour. Try again later.' });
   }
@@ -348,7 +349,7 @@ async function planAction(res, key, ip, body) {
   if (isPlan) {
     const subjects = Array.isArray(body.subjects) ? body.subjects.slice(0, 12) : [];
     content = [frame, { type: 'text', text: planPrompt(Number(body.width) || 0, Number(body.height) || 0, subjects) }];
-    schema = PLAN_SCHEMA; maxTokens = 32000;
+    schema = PLAN_SCHEMA; maxTokens = 48000;
   } else {
     const renders = Array.isArray(body.renders) ? body.renders.map(cleanB64) : [];
     if (renders.length !== 4 || renders.some((r) => !r || r.length > MAX_RENDER_B64)) return send(res, 400, { error: 'Send exactly 4 renders as base64 JPEGs in "renders".' });
@@ -360,7 +361,7 @@ async function planAction(res, key, ip, body) {
       ...renders.flatMap((data, i) => [{ type: 'text', text: `Image ${i + 2}:` }, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } }]),
       { type: 'text', text: refinePrompt(round, planJson) },
     ];
-    schema = PATCH_SCHEMA; maxTokens = 16000;
+    schema = PATCH_SCHEMA; maxTokens = 24000;
   }
   let out;
   try { out = await callClaude(key, { content, schema, maxTokens }); }
@@ -370,7 +371,7 @@ async function planAction(res, key, ip, body) {
 
 async function handler(req, res) {
   const key = process.env.ANTHROPIC_API_KEY;
-  if (req.method === 'GET') return send(res, 200, { enabled: Boolean(key), model: MODEL, plan: Boolean(key), planModel: PLAN_MODEL() });
+  if (req.method === 'GET') return send(res, 200, { enabled: Boolean(key), model: MODEL, plan: Boolean(key && process.env.CLAUDE_WORLD), planModel: PLAN_MODEL() });
   if (req.method !== 'POST') return send(res, 405, { error: 'Use GET or POST.' });
   if (!key) return send(res, 503, { error: 'Smart scene is not set up on this site.' });
 

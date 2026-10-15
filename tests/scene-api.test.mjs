@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 process.env.ANTHROPIC_API_KEY = 'test-key';
+process.env.CLAUDE_WORLD = '1';
 const handler = require('../api/scene.js');
 const { PLAN_SCHEMA, PATCH_SCHEMA, SCHEMA } = handler;
 
@@ -100,6 +101,30 @@ test('times out cleanly', async () => {
   await handler(req({ action: 'plan', image: jpeg(), width: 10, height: 10 }), r);
   assert.equal(r.statusCode, 504);
   assert.match(json(r).error, /too long/);
+});
+
+test('times out while reading the answer', async () => {
+  process.env.PLAN_TIMEOUT_MS = '30';
+  globalThis.fetch = async (url, init) => ({
+    ok: true, status: 200,
+    json: () => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))),
+  });
+  const r = res();
+  await handler(req({ action: 'plan', image: jpeg(), width: 10, height: 10 }), r);
+  assert.equal(r.statusCode, 504);
+});
+
+test('plan and refine are off without CLAUDE_WORLD', async () => {
+  delete process.env.CLAUDE_WORLD;
+  try {
+    const r = res();
+    await handler(req({ action: 'plan', image: jpeg(), width: 10, height: 10 }), r);
+    assert.equal(r.statusCode, 404);
+    assert.equal(calls.length, 0);
+    const g = res();
+    await handler(req(undefined, 'GET'), g);
+    assert.equal(json(g).plan, false);
+  } finally { process.env.CLAUDE_WORLD = '1'; }
 });
 
 test('limits plans per visitor', async () => {
