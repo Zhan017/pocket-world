@@ -161,7 +161,8 @@ function crosswalkGeometries(m, y) {
 }
 
 // Meshes for one object: a list of [geometry, material id or null, color].
-function objectParts(o, h, topAt) {
+// kindOf(materialId) gives a plan material's kind ('bark', 'foliage', ...) or null.
+function objectParts(o, h, topAt, kindOf = () => null) {
   const parts = [];
   const at = o.at || (o.path ? o.path[Math.floor(o.path.length / 2)] : null);
   const H = o.height_m;
@@ -198,11 +199,13 @@ function objectParts(o, h, topAt) {
     case 'tree': {
       if (!at) break;
       const rad = Math.min(8, Math.max(0.8, o.width_m / 2));
-      parts.push([put(cyl(0.15, H * 0.5), at), null, '#5b4636']);
+      // A tree's material may be its bark (trunk) or its leaves (crown).
+      const bark = kindOf(o.material) === 'bark';
+      parts.push([put(cyl(0.15, H * 0.5), at), bark ? o.material : null, '#5b4636']);
       const crown = new THREE.IcosahedronGeometry(rad, 1);
       crown.scale(1, 1.15, 1);
       crown.translate(0, Math.max(rad, H - rad * 1.1), 0);
-      parts.push([put(crown, at), o.material, o.color]);
+      parts.push([put(crown, at), bark ? null : o.material, o.color]);
       break;
     }
     case 'bush': {
@@ -318,7 +321,8 @@ export function buildPlanScene(plan, { photo, noData = null }) {
       add(ribbonGeometry(m.points, m.width_m, y, dashed ? (m.dash_m || 3) : 0, dashed ? (m.gap_m || 6) : 0), flatMat(m.color)).userData.paint = true;
     }
   }
-  for (const o of plan.objects) for (const [geo, matId, hex] of objectParts(o, h, topAt)) add(geo, materialFor(matId, hex));
+  const kinds = new Map(plan.materials.map((m) => [m.id, m.kind]));
+  for (const o of plan.objects) for (const [geo, matId, hex] of objectParts(o, h, topAt, (id) => kinds.get(id) || null)) add(geo, materialFor(matId, hex));
   // Ground to the horizon, so the photo's far road still has something to land on.
   const disc = new THREE.CircleGeometry(2400, 64);
   disc.rotateX(-Math.PI / 2);
