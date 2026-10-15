@@ -28,8 +28,12 @@ test('ground tile samples real ground positions', () => {
   // Column 0 is metres/2 to the left of the centre; row 0 is metres/2 nearer.
   const left = c[0] - t.metres / 2 + (0.5 / 32) * t.metres;
   const nearF = c[1] - t.metres / 2 + (0.5 / 32) * t.metres;
-  assert.ok(Math.abs(at(0, 16)[0] - (128 + 10 * left)) <= 3, `red ${at(0, 16)[0]} vs ${128 + 10 * left}`);
-  assert.ok(Math.abs(at(16, 0)[1] - 4 * nearF) <= 3, `green ${at(16, 0)[1]} vs ${4 * nearF}`);
+  const right = c[0] + t.metres / 2 - (0.5 / 32) * t.metres;
+  const farF = c[1] + t.metres / 2 - (0.5 / 32) * t.metres;
+  assert.ok(Math.abs(at(0, 16)[0] - (128 + 10 * left)) <= 1.5, `red left ${at(0, 16)[0]} vs ${128 + 10 * left}`);
+  assert.ok(Math.abs(at(31, 16)[0] - (128 + 10 * right)) <= 1.5, `red right ${at(31, 16)[0]} vs ${128 + 10 * right}`);
+  assert.ok(Math.abs(at(16, 0)[1] - 4 * nearF) <= 1.5, `green near ${at(16, 0)[1]} vs ${4 * nearF}`);
+  assert.ok(Math.abs(at(16, 31)[1] - 4 * farF) <= 1.5, `green far ${at(16, 31)[1]} vs ${4 * farF}`);
   assert.ok(at(31, 16)[0] > at(0, 16)[0], 'red grows to the right');
   assert.ok(at(16, 31)[1] > at(16, 0)[1], 'green grows forward');
 });
@@ -41,8 +45,17 @@ test('ground tile is null above the horizon', () => {
 
 test('patch tile resamples the box', () => {
   const data = new Uint8ClampedArray(10 * 10 * 4);
-  for (let i = 0; i < 100; i++) { data[i * 4] = i % 10 < 5 ? 0 : 200; data[i * 4 + 3] = 255; }
-  const t = patchTile({ data, width: 10, height: 10 }, [0.6, 0, 1, 1], 8);   // stays clear of the 0/200 boundary
+  for (let i = 0; i < 100; i++) {
+    data[i * 4] = i % 10 < 5 ? 0 : 200;
+    data[i * 4 + 1] = Math.floor(i / 10) < 5 ? 50 : 150;
+    data[i * 4 + 3] = 255;
+  }
+  const img = { data, width: 10, height: 10 };
+  const t = patchTile(img, [0.6, 0, 1, 1], 8);   // stays clear of the 0/200 boundary
   assert.equal(t.width, 8);
   for (let i = 0; i < 64; i++) assert.equal(t.data[i * 4], 200);
+  const top = patchTile(img, [0.6, 0, 1, 0.4], 8);
+  for (let i = 0; i < 64; i++) { assert.equal(top.data[i * 4], 200); assert.equal(top.data[i * 4 + 1], 50); }
+  const bottom = patchTile(img, [0.6, 0.6, 1, 1], 8);
+  for (let i = 0; i < 64; i++) { assert.equal(bottom.data[i * 4], 200); assert.equal(bottom.data[i * 4 + 1], 150); }
 });
