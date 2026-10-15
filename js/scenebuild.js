@@ -160,10 +160,11 @@ function crosswalkGeometries(m, y) {
   return lists.map((pos) => (pos.length ? positions(pos) : null));
 }
 
-// Meshes for one object: a list of [geometry, material id or null, color].
 // Posts thinner than this get an invisible, fatter stand-in so the walking rays
 // (0.15 m apart, js/walk.js) can't slip past them.
 const SOLID_POST = 0.1;
+
+// Meshes for one object: a list of [geometry, material id or null, color, 'solid' for a collision-only stand-in].
 // kindOf(materialId) gives a plan material's kind ('bark', 'foliage', ...) or null.
 function objectParts(o, h, topAt, kindOf = () => null) {
   const parts = [];
