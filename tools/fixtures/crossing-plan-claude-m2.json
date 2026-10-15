@@ -1,0 +1,775 @@
+{
+  "caption": "Two-lane road with a zebra crossing, grass verges and shrub beds",
+  "scene_type": "street",
+  "camera": {
+    "height_m": 6,
+    "pitch_deg": 27,
+    "hfov_deg": 50
+  },
+  "ground_polygon": [
+    {
+      "x": 0,
+      "y": 0
+    },
+    {
+      "x": 1,
+      "y": 0
+    },
+    {
+      "x": 1,
+      "y": 1
+    },
+    {
+      "x": 0,
+      "y": 1
+    }
+  ],
+  "subjects": [
+    {
+      "id": 0,
+      "keep": true,
+      "reason": "Real white Hyundai SUV driving toward the camera"
+    }
+  ],
+  "vehicles": [
+    {
+      "id": 0,
+      "body_style": "crossover",
+      "make_model": "Hyundai Creta",
+      "body_color": "#e8eaec",
+      "roof_color": "#e8eaec",
+      "trim_color": "#2a2a2a",
+      "wheel_color": "#b0b2b4",
+      "length_m": 4.27,
+      "width_m": 1.78,
+      "height_m": 1.63,
+      "heading_deg": 19,
+      "taillight_style": "corner",
+      "profile": [
+        {
+          "t": 0,
+          "h": 0.5,
+          "part": "body"
+        },
+        {
+          "t": 0.03,
+          "h": 0.82,
+          "part": "glass"
+        },
+        {
+          "t": 0.1,
+          "h": 0.98,
+          "part": "roof"
+        },
+        {
+          "t": 0.55,
+          "h": 1,
+          "part": "glass"
+        },
+        {
+          "t": 0.72,
+          "h": 0.68,
+          "part": "body"
+        },
+        {
+          "t": 0.9,
+          "h": 0.6,
+          "part": "body"
+        },
+        {
+          "t": 1,
+          "h": 0.45,
+          "part": "body"
+        }
+      ],
+      "belt_h": 0.6,
+      "axle_rear_t": 0.18,
+      "axle_front_t": 0.81,
+      "wheel_diameter_m": 0.68,
+      "roundness": 0.35,
+      "at": [
+        0.54,
+        9.8
+      ]
+    }
+  ],
+  "sky": {
+    "top": "#8fb4dc",
+    "horizon": "#d4e2ee"
+  },
+  "ground_color": "#6a9a42",
+  "overlays": [],
+  "materials": [
+    {
+      "id": "mat-asphalt",
+      "kind": "asphalt",
+      "color": "#8f908f",
+      "sample_box": [
+        0.55,
+        0.88,
+        0.75,
+        0.98
+      ]
+    },
+    {
+      "id": "mat-grass",
+      "kind": "grass",
+      "color": "#6aa040",
+      "sample_box": [
+        0.15,
+        0.35,
+        0.22,
+        0.45
+      ]
+    },
+    {
+      "id": "mat-shrub",
+      "kind": "foliage",
+      "color": "#4f7a35",
+      "sample_box": [
+        0.8,
+        0.15,
+        0.9,
+        0.25
+      ]
+    },
+    {
+      "id": "mat-paving",
+      "kind": "paving",
+      "color": "#9a9a96",
+      "sample_box": [
+        0,
+        0.66,
+        0.08,
+        0.7
+      ]
+    },
+    {
+      "id": "mat-channel",
+      "kind": "concrete",
+      "color": "#8a98a6",
+      "sample_box": null
+    },
+    {
+      "id": "mat-curb",
+      "kind": "curb",
+      "color": "#c8c8c4",
+      "sample_box": null
+    },
+    {
+      "id": "mat-metal",
+      "kind": "metal",
+      "color": "#9a9a9a",
+      "sample_box": null
+    },
+    {
+      "id": "mat-bark",
+      "kind": "bark",
+      "color": "#6a4a30",
+      "sample_box": null
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "s1",
+      "kind": "road",
+      "material": "mat-asphalt",
+      "polygon": [
+        [
+          11.63,
+          -30
+        ],
+        [
+          19.76,
+          -30
+        ],
+        [
+          -11.16,
+          60
+        ],
+        [
+          -19.29,
+          60
+        ]
+      ],
+      "top_m": 0
+    },
+    {
+      "id": "s2",
+      "kind": "road",
+      "material": "mat-asphalt",
+      "polygon": [
+        [
+          0.47,
+          2.5
+        ],
+        [
+          -1.99,
+          9.64
+        ],
+        [
+          -2.43,
+          8.87
+        ],
+        [
+          -40,
+          -8
+        ],
+        [
+          -40,
+          -15.7
+        ]
+      ],
+      "top_m": 0
+    },
+    {
+      "id": "s3",
+      "kind": "sidewalk",
+      "material": "mat-paving",
+      "polygon": [
+        [
+          -2,
+          9.75
+        ],
+        [
+          -2.2,
+          10.55
+        ],
+        [
+          -3.17,
+          10.51
+        ],
+        [
+          -40,
+          -6.2
+        ],
+        [
+          -40,
+          -7.1
+        ],
+        [
+          -2.84,
+          9.78
+        ]
+      ],
+      "top_m": 0.15
+    },
+    {
+      "id": "s4",
+      "kind": "verge",
+      "material": "mat-grass",
+      "polygon": [
+        [
+          -2.2,
+          10.55
+        ],
+        [
+          -19.29,
+          60
+        ],
+        [
+          -40,
+          60
+        ],
+        [
+          -40,
+          -6.2
+        ],
+        [
+          -3.17,
+          10.51
+        ]
+      ],
+      "top_m": 0.15
+    },
+    {
+      "id": "s5",
+      "kind": "verge",
+      "material": "mat-channel",
+      "polygon": [
+        [
+          -3.68,
+          10
+        ],
+        [
+          -20.86,
+          60
+        ],
+        [
+          -21.36,
+          60
+        ],
+        [
+          -4.18,
+          10
+        ]
+      ],
+      "top_m": 0.16
+    },
+    {
+      "id": "s6",
+      "kind": "verge",
+      "material": "mat-grass",
+      "polygon": [
+        [
+          19.78,
+          -30
+        ],
+        [
+          21.86,
+          -30
+        ],
+        [
+          -9.06,
+          60
+        ],
+        [
+          -11.14,
+          60
+        ]
+      ],
+      "top_m": 0.15
+    },
+    {
+      "id": "s7",
+      "kind": "verge",
+      "material": "mat-shrub",
+      "polygon": [
+        [
+          21.86,
+          -30
+        ],
+        [
+          30.16,
+          -30
+        ],
+        [
+          -0.76,
+          60
+        ],
+        [
+          -9.06,
+          60
+        ]
+      ],
+      "top_m": 0.2
+    },
+    {
+      "id": "s8",
+      "kind": "road",
+      "material": "mat-asphalt",
+      "polygon": [
+        [
+          30.16,
+          -30
+        ],
+        [
+          37.56,
+          -30
+        ],
+        [
+          6.64,
+          60
+        ],
+        [
+          -0.76,
+          60
+        ]
+      ],
+      "top_m": 0
+    },
+    {
+      "id": "s9",
+      "kind": "verge",
+      "material": "mat-grass",
+      "polygon": [
+        [
+          0.47,
+          2.5
+        ],
+        [
+          -40,
+          -15.7
+        ],
+        [
+          -40,
+          -30
+        ],
+        [
+          11.63,
+          -30
+        ]
+      ],
+      "top_m": 0.15
+    },
+    {
+      "id": "s10",
+      "kind": "verge",
+      "material": "mat-grass",
+      "polygon": [
+        [
+          -2.43,
+          8.87
+        ],
+        [
+          -2.84,
+          9.78
+        ],
+        [
+          -40,
+          -7.1
+        ],
+        [
+          -40,
+          -8
+        ]
+      ],
+      "top_m": 0.15
+    },
+    {
+      "id": "s11",
+      "kind": "verge",
+      "material": "mat-grass",
+      "polygon": [
+        [
+          37.56,
+          -30
+        ],
+        [
+          50,
+          -30
+        ],
+        [
+          19,
+          60
+        ],
+        [
+          6.64,
+          60
+        ]
+      ],
+      "top_m": 0.15
+    }
+  ],
+  "markings": [
+    {
+      "id": "m1",
+      "kind": "lane_dashed",
+      "color": "#f0f0f0",
+      "color2": "#f0f0f0",
+      "points": [
+        [
+          0.43,
+          14.3
+        ],
+        [
+          -15.28,
+          60
+        ]
+      ],
+      "width_m": 0.15,
+      "dash_m": 3,
+      "gap_m": 1.5
+    },
+    {
+      "id": "m2",
+      "kind": "edge_line",
+      "color": "#e0c860",
+      "color2": "#e0c860",
+      "points": [
+        [
+          -1.71,
+          9.7
+        ],
+        [
+          -18.99,
+          60
+        ]
+      ],
+      "width_m": 0.15,
+      "dash_m": 0,
+      "gap_m": 0
+    },
+    {
+      "id": "m3",
+      "kind": "edge_line",
+      "color": "#e0c860",
+      "color2": "#e0c860",
+      "points": [
+        [
+          0.77,
+          2.5
+        ],
+        [
+          11.93,
+          -30
+        ]
+      ],
+      "width_m": 0.15,
+      "dash_m": 0,
+      "gap_m": 0
+    },
+    {
+      "id": "m4",
+      "kind": "edge_line",
+      "color": "#e0c860",
+      "color2": "#e0c860",
+      "points": [
+        [
+          19.36,
+          -30
+        ],
+        [
+          -11.56,
+          60
+        ]
+      ],
+      "width_m": 0.15,
+      "dash_m": 0,
+      "gap_m": 0
+    },
+    {
+      "id": "m5",
+      "kind": "crosswalk",
+      "color": "#f2f2f2",
+      "color2": "#d8c870",
+      "points": [
+        [
+          -1.7,
+          8.8
+        ],
+        [
+          6.43,
+          8.8
+        ]
+      ],
+      "width_m": 1.8,
+      "dash_m": 0.55,
+      "gap_m": 0.1
+    },
+    {
+      "id": "m6",
+      "kind": "lane_dashed",
+      "color": "#f0f0f0",
+      "color2": "#f0f0f0",
+      "points": [
+        [
+          3.62,
+          5
+        ],
+        [
+          15.65,
+          -30
+        ]
+      ],
+      "width_m": 0.15,
+      "dash_m": 3,
+      "gap_m": 1.5
+    }
+  ],
+  "objects": [
+    {
+      "id": "o1",
+      "kind": "sign",
+      "at": [
+        -5.14,
+        10.26
+      ],
+      "path": null,
+      "height_m": 3.6,
+      "width_m": 0.7,
+      "depth_m": 0.05,
+      "heading_deg": 0,
+      "material": "mat-metal",
+      "color": "#2a5cb0",
+      "seen": true,
+      "sign": {
+        "shape": "square",
+        "face_color": "#2a5cb0",
+        "symbol": "pedestrian_crossing"
+      }
+    },
+    {
+      "id": "o2",
+      "kind": "sign",
+      "at": [
+        -5.14,
+        10.3
+      ],
+      "path": null,
+      "height_m": 2.7,
+      "width_m": 0.7,
+      "depth_m": 0.05,
+      "heading_deg": 0,
+      "material": "mat-metal",
+      "color": "#f0f0f0",
+      "seen": true,
+      "sign": {
+        "shape": "rectangle",
+        "face_color": "#f0f0f0",
+        "symbol": "blind_pedestrians"
+      }
+    },
+    {
+      "id": "o3",
+      "kind": "tree",
+      "at": [
+        5.3,
+        25
+      ],
+      "path": null,
+      "height_m": 3.5,
+      "width_m": 1.3,
+      "depth_m": 1.3,
+      "heading_deg": 0,
+      "material": "mat-bark",
+      "color": "#5a8a3a",
+      "seen": true,
+      "sign": null
+    },
+    {
+      "id": "o4",
+      "kind": "tree",
+      "at": [
+        7.5,
+        19.1
+      ],
+      "path": null,
+      "height_m": 3.5,
+      "width_m": 1.3,
+      "depth_m": 1.3,
+      "heading_deg": 0,
+      "material": "mat-bark",
+      "color": "#5a8a3a",
+      "seen": true,
+      "sign": null
+    },
+    {
+      "id": "o5",
+      "kind": "tree",
+      "at": [
+        3.3,
+        30.7
+      ],
+      "path": null,
+      "height_m": 3.5,
+      "width_m": 1.3,
+      "depth_m": 1.3,
+      "heading_deg": 0,
+      "material": "mat-bark",
+      "color": "#5a8a3a",
+      "seen": true,
+      "sign": null
+    },
+    {
+      "id": "o6",
+      "kind": "tree",
+      "at": [
+        9.46,
+        13.4
+      ],
+      "path": null,
+      "height_m": 3.5,
+      "width_m": 1.3,
+      "depth_m": 1.3,
+      "heading_deg": 0,
+      "material": "mat-bark",
+      "color": "#5a8a3a",
+      "seen": false,
+      "sign": null
+    },
+    {
+      "id": "o7",
+      "kind": "tree",
+      "at": [
+        13.4,
+        2.1
+      ],
+      "path": null,
+      "height_m": 3.5,
+      "width_m": 1.3,
+      "depth_m": 1.3,
+      "heading_deg": 0,
+      "material": "mat-bark",
+      "color": "#5a8a3a",
+      "seen": false,
+      "sign": null
+    },
+    {
+      "id": "o8",
+      "kind": "tree",
+      "at": [
+        1.3,
+        36.4
+      ],
+      "path": null,
+      "height_m": 3.5,
+      "width_m": 1.3,
+      "depth_m": 1.3,
+      "heading_deg": 0,
+      "material": "mat-bark",
+      "color": "#5a8a3a",
+      "seen": false,
+      "sign": null
+    },
+    {
+      "id": "o9",
+      "kind": "bush",
+      "at": [
+        -9.6,
+        27
+      ],
+      "path": null,
+      "height_m": 1.2,
+      "width_m": 1.2,
+      "depth_m": 1.2,
+      "heading_deg": 0,
+      "material": "mat-shrub",
+      "color": "#8a4a40",
+      "seen": true,
+      "sign": null
+    },
+    {
+      "id": "o10",
+      "kind": "lamp_post",
+      "at": [
+        -6.17,
+        12.54
+      ],
+      "path": null,
+      "height_m": 8,
+      "width_m": 0.2,
+      "depth_m": 0.2,
+      "heading_deg": 90,
+      "material": "mat-metal",
+      "color": "#8a8a8a",
+      "seen": true,
+      "sign": null
+    },
+    {
+      "id": "o11",
+      "kind": "hedge",
+      "at": null,
+      "path": [
+        [
+          25.86,
+          -30
+        ],
+        [
+          -5.06,
+          60
+        ]
+      ],
+      "height_m": 0.9,
+      "width_m": 5,
+      "depth_m": 5,
+      "heading_deg": 0,
+      "material": "mat-shrub",
+      "color": "#4f7a35",
+      "seen": true,
+      "sign": null
+    }
+  ],
+  "extent_m": 60,
+  "notes": "The camera, road edges, crosswalk, car and signs now line up with the photo, so I made no changes and marked the plan as done."
+}
