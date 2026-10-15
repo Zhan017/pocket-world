@@ -514,7 +514,7 @@ async function processFile(file) {
       const sHi = Math.min(1, 2576 / Math.max(bitmap.width, bitmap.height));
       photoHi = document.createElement('canvas');
       photoHi.width = Math.max(8, Math.round(bitmap.width * sHi)); photoHi.height = Math.max(8, Math.round(bitmap.height * sHi));
-      photoHi.getContext('2d').drawImage(bitmap, 0, 0, photoHi.width, photoHi.height);
+      photoHi.getContext('2d', { willReadFrequently: true }).drawImage(bitmap, 0, 0, photoHi.width, photoHi.height);
     }
     bitmap.close?.();
     const rgba = ctx.getImageData(0, 0, W, H).data;

@@ -31,11 +31,23 @@ const frag = /* glsl */`
   uniform vec3 fogColor; uniform float fogNear; uniform float fogFar;
   varying vec3 vWorld;
   float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float noise(vec2 p) {
+    vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+  }
   void main() {
     vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
     vec2 tuv = abs(n.y) > 0.6 ? vec2(vWorld.x, -vWorld.z) : vec2(vWorld.x - vWorld.z, vWorld.y);
-    vec3 base = hasTile > 0.5 ? texture2D(tile, tuv / tileSize).rgb
-                              : baseColor * (0.94 + 0.12 * hash(floor(vWorld.xz * 3.0)));
+    // Large soft patches so big areas don't read as one repeated tile.
+    float tint = 0.94 + 0.12 * noise(tuv * 0.06);
+    vec3 base;
+    if (hasTile > 0.5) {
+      vec3 a = texture2D(tile, tuv / tileSize).rgb;
+      vec3 b = texture2D(tile, (tuv * 0.61 + vec2(0.37, 0.71)) / tileSize).rgb;   // a second scale hides the repeat
+      base = mix(a, b, smoothstep(0.35, 0.65, noise(tuv * 0.15))) * tint;
+    } else {
+      base = baseColor * (0.93 + 0.14 * (noise(tuv * 1.3) * 0.6 + noise(tuv * 5.0) * 0.4)) * tint;
+    }
     vec3 col = base;
     vec4 clip = photoViewProj * vec4(vWorld, 1.0);
     if (clip.w > 0.0) {
@@ -86,6 +98,13 @@ function inside(poly, r, f) {
     if ((yi > f) !== (yj > f) && r < ((xj - xi) * (f - yi)) / (yj - yi) + xi) c = !c;
   }
   return c;
+}
+
+/** Height of the plan's surface under [r, f] (the highest one containing it), or 0 on the road. */
+export function surfaceTopAt(plan, r, f) {
+  let top = 0;
+  for (const s of plan.surfaces) if (s.top_m > top && inside(s.polygon, r, f)) top = s.top_m;
+  return top;
 }
 
 function surfaceGeometry(s, h, layer) {
@@ -285,11 +304,7 @@ export function buildPlanScene(plan, { photo, noData = null }) {
 
   const meshes = [];
   const add = (geo, mat) => { const mesh = new THREE.Mesh(keep(geo), mat); group.add(mesh); meshes.push(mesh); return mesh; };
-  const topAt = (r, f) => {
-    let top = 0;
-    for (const s of plan.surfaces) if (s.top_m > top && inside(s.polygon, r, f)) top = s.top_m;
-    return top;
-  };
+  const topAt = (r, f) => surfaceTopAt(plan, r, f);
 
   plan.surfaces.forEach((s, i) => add(surfaceGeometry(s, h, i), materialFor(s.material, SURFACE_COLORS[s.kind] || '#808080')));
   for (const m of plan.markings) {
