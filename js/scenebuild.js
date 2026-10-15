@@ -311,11 +311,11 @@ export function buildPlanScene(plan, { photo, noData = null }) {
     const y = -h + topAt(m.points[0][0], m.points[0][1]) + 0.045;
     if (m.kind === 'crosswalk') {
       const [g0, g1] = crosswalkGeometries(m, y);
-      if (g0) add(g0, flatMat(m.color));
-      if (g1) add(g1, flatMat(m.color2));
+      if (g0) add(g0, flatMat(m.color)).userData.paint = true;
+      if (g1) add(g1, flatMat(m.color2)).userData.paint = true;
     } else {
       const dashed = m.kind === 'lane_dashed';
-      add(ribbonGeometry(m.points, m.width_m, y, dashed ? (m.dash_m || 3) : 0, dashed ? (m.gap_m || 6) : 0), flatMat(m.color));
+      add(ribbonGeometry(m.points, m.width_m, y, dashed ? (m.dash_m || 3) : 0, dashed ? (m.gap_m || 6) : 0), flatMat(m.color)).userData.paint = true;
     }
   }
   for (const o of plan.objects) for (const [geo, matId, hex] of objectParts(o, h, topAt)) add(geo, materialFor(matId, hex));

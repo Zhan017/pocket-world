@@ -6,7 +6,6 @@ import { WalkControls } from './controls.js';
 import { decodeScan } from './scan-format.js';
 import { validatePlan } from './plan.js';
 import { refineLoop } from './refine-loop.js';
-import { makeCollider } from './collide.js';
 import { renderViews } from './refine.js';
 
 const $ = (s) => document.querySelector(s);
@@ -42,6 +41,9 @@ let collider = null;
 // Claude World (docs/superpowers/specs/2026-10-15-claude-world-design.md):
 // behind ?plan=1 while it is being built, so the live site is unchanged.
 const PLAN_MODE = new URLSearchParams(location.search).has('plan');
+// Walking collision (three-mesh-bvh from the CDN) is only loaded for Claude's world;
+// if it fails to load you still walk, just without collision.
+const { makeCollider = null } = PLAN_MODE ? await import('./collide.js').catch(() => ({})) : {};
 const PLAN_ROUNDS = 5;
 const planLog = [];
 let planJob = 0;
@@ -157,9 +159,9 @@ function setWorld({ scan, photo, photoHi = null, name, sceneInfo = null }, { aut
   // Claude's world is solid: walking follows its ground and stops at its walls and cars.
   if (collider) { collider.dispose(); collider = null; }
   walk.collide = null;
-  if (world.info.plan) {
+  if (world.info.plan && makeCollider) {
     world.group.updateMatrixWorld(true);
-    const meshes = [...world.planScene.meshes];
+    const meshes = world.planScene.meshes.filter((m) => !m.userData.paint);   // paint is flat, not a step
     for (const m of world.models()) m.traverse((o) => { if (o.isMesh) meshes.push(o); });
     collider = makeCollider(meshes);
     walk.collide = collider;
