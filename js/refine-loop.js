@@ -12,16 +12,26 @@ import { applyPatch } from './plan.js';
  * @param {(req: {round: number, renders: string[], plan: object}) => Promise<{patch: object, usage?: object}>} o.call
  * @param {(plan: object) => void} o.apply  rebuild the world from a corrected plan
  * @param {(info: object) => void} [o.onRound]
+ * @param {number} [o.retries=1]  extra tries for a round whose call fails (not for 4xx answers)
+ * @param {(info: {round: number, error: Error, ms: number}) => void} [o.onRetry]
  * @param {() => boolean} [o.cancelled]
  */
-export async function refineLoop({ plan, rounds = 5, render, call, apply, onRound = () => {}, cancelled = () => false }) {
+export async function refineLoop({ plan, rounds = 5, retries = 1, render, call, apply, onRound = () => {}, onRetry = () => {}, cancelled = () => false }) {
   let current = plan;
   for (let round = 1; round <= rounds; round++) {
     if (cancelled()) return { plan: current, rounds: round - 1, stopped: 'cancelled' };
     const t0 = Date.now();
     let res;
     try {
-      res = await call({ round, renders: await render(current), plan: current });
+      const renders = await render(current);
+      for (let attempt = 0; ; attempt++) {
+        try { res = await call({ round, renders, plan: current }); break; } catch (error) {
+          // A long answer runs past Claude's output cap now and then; the same request
+          // usually works the second time. Refusals (4xx) and cancelled jobs are final.
+          if (attempt >= retries || (error.status >= 400 && error.status < 500) || cancelled()) throw error;
+          onRetry({ round, error, ms: Date.now() - t0 });
+        }
+      }
     } catch (error) {
       return { plan: current, rounds: round - 1, stopped: 'error', error };
     }

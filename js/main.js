@@ -368,7 +368,7 @@ function frameB64(canvas, maxChars = 1_600_000) {
 async function sceneApi(body) {
   const r = await fetch('api/scene', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || `status ${r.status}`);
+  if (!r.ok) throw Object.assign(new Error(j.error || `status ${r.status}`), { status: r.status });
   return j;
 }
 
@@ -397,6 +397,10 @@ async function buildWithClaude(job, { scan, photo, photoHi, name }) {
     onRound: (info) => {
       planLog.push({ step: 'refine', ...info });
       if (job === planJob) status3d(`Round ${info.round} of ${PLAN_ROUNDS}: ${info.notes || 'checked'}`);
+    },
+    onRetry: (info) => {
+      planLog.push({ step: 'refine', round: info.round, retry: true, error: info.error.message, ms: info.ms });
+      if (job === planJob) status3d(`Round ${info.round} of ${PLAN_ROUNDS}: trying again (${info.error.message})`);
     },
     cancelled: () => job !== planJob,
   });

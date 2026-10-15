@@ -41,12 +41,34 @@ test('stops after the round limit', async () => {
 });
 
 test('stops on a failed call and keeps the plan', async () => {
-  const h = harness([new Error('Claude took too long.')]);
+  const h = harness([new Error('Claude took too long.'), new Error('Claude took too long.')]);
   const out = await refineLoop(h.opts);
   assert.equal(out.stopped, 'error');
   assert.equal(out.plan, plan);
   assert.equal(h.applied.length, 0);
   assert.match(out.error.message, /too long/);
+});
+
+test('retries a failed round once', async () => {
+  const h = harness([new Error("Claude's answer was cut off."), patch({ done: true, notes: 'aligned' })]);
+  const retries = [];
+  const out = await refineLoop({ ...h.opts, onRetry: (info) => retries.push(info) });
+  assert.equal(out.stopped, 'done');
+  assert.equal(out.rounds, 1);
+  assert.equal(retries.length, 1);
+  assert.equal(retries[0].round, 1);
+  assert.equal(retries[0].error.message, "Claude's answer was cut off.");
+  assert.equal(h.applied.length, 1);
+});
+
+test('does not retry a refused request', async () => {
+  const h = harness([Object.assign(new Error('Too many corrections'), { status: 429 }), patch({ done: true })]);
+  const retries = [];
+  const out = await refineLoop({ ...h.opts, onRetry: (info) => retries.push(info) });
+  assert.equal(out.stopped, 'error');
+  assert.equal(out.rounds, 0);
+  assert.equal(retries.length, 0);
+  assert.equal(h.applied.length, 0);
 });
 
 test('stops on a rejected patch', async () => {
