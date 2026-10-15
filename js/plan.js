@@ -106,11 +106,15 @@ export function validatePlan(raw) {
     if (!pts) return;
     const color = hex(m.color, '#f2f2f2');
     const crosswalk = m.kind === 'crosswalk';
+    if (crosswalk && Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) > 60) return;
+    const dashed = m.kind === 'lane_dashed';
+    // dashed lines are walked dash by dash later on, so tiny or zero values would hang: 0 or missing means the default
+    const pos = (v, a, b, d) => (Number(v) > 0 && v !== null && v !== '' ? num(v, a, b, d) : d);
     markings.push({
       id: uid(m.id, 'm', i), kind: m.kind, color, color2: hex(m.color2, color), points: pts,
       width_m: num(m.width_m, 0.05, 8, crosswalk ? 3 : 0.15),
-      dash_m: crosswalk ? (num(m.dash_m, 0, 3, 0) >= 0.2 ? num(m.dash_m, 0, 3, 0.5) : 0.5) : num(m.dash_m, 0, 20, 0),
-      gap_m: num(m.gap_m, 0, 20, 0),
+      dash_m: dashed ? pos(m.dash_m, 0.3, 20, 3) : crosswalk ? (num(m.dash_m, 0, 3, 0) >= 0.2 ? num(m.dash_m, 0, 3, 0.5) : 0.5) : num(m.dash_m, 0, 20, 0),
+      gap_m: dashed ? pos(m.gap_m, 0.3, 20, 6) : crosswalk ? num(m.gap_m, 0, 3, 0) : num(m.gap_m, 0, 20, 0),
     });
   });
 
@@ -165,10 +169,12 @@ export function validatePlan(raw) {
 export function applyPatch(plan, patch) {
   if (!plan || !patch || typeof patch !== 'object' || Array.isArray(patch)) return plan;
   const remove = new Set(Array.isArray(patch.remove) ? patch.remove.map(String) : []);
-  const merge = (items, upd) => {
+  const merge = (category, items, upd) => {
     const out = items.filter((e) => !remove.has(String(e.id)));
     for (const u of Array.isArray(upd) ? upd : []) {
       if (!u || typeof u !== 'object' || u.id == null) continue;
+      // a replacement that would not survive validation must not push out the good original
+      if (validatePlan({ ...plan, [category]: [u] })?.[category].length !== 1) continue;
       const i = out.findIndex((e) => String(e.id) === String(u.id));
       if (i >= 0) out[i] = u; else out.push(u);
     }
@@ -177,11 +183,11 @@ export function applyPatch(plan, patch) {
   const next = validatePlan({
     ...plan,
     camera: patch.camera && typeof patch.camera === 'object' ? { ...plan.camera, ...patch.camera } : plan.camera,
-    materials: merge(plan.materials, patch.materials),
-    surfaces: merge(plan.surfaces, patch.surfaces),
-    markings: merge(plan.markings, patch.markings),
-    objects: merge(plan.objects, patch.objects),
-    vehicles: merge(plan.vehicles, patch.vehicles),
+    materials: merge('materials', plan.materials, patch.materials),
+    surfaces: merge('surfaces', plan.surfaces, patch.surfaces),
+    markings: merge('markings', plan.markings, patch.markings),
+    objects: merge('objects', plan.objects, patch.objects),
+    vehicles: merge('vehicles', plan.vehicles, patch.vehicles),
     notes: typeof patch.notes === 'string' ? patch.notes : plan.notes,
   });
   return next && next.surfaces.length ? next : plan;

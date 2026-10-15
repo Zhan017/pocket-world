@@ -41,7 +41,7 @@ test('drops broken surfaces', () => {
   raw.surfaces.push(
     { id: 's2', kind: 'road', material: null, polygon: [[0, 0], [1, 1]], top_m: 0 },                          // two points
     { id: 's3', kind: 'grass', material: null, polygon: [[0, 0], [0.5, 0], [0.5, 0.5]], top_m: 0 },           // 0.125 m2 sliver
-    { id: 's4', kind: 'grass', material: null, polygon: [[0, 0], [10, 10], [10, 0], [0, 10]], top_m: 0 },     // bow tie
+    { id: 's4', kind: 'grass', material: null, polygon: [[0, 0], [20, 10], [20, 0], [0, 30]], top_m: 0 },     // bow tie
     { id: 's5', kind: 'sidewalk', material: 'nope', polygon: [[8, 0], [12, 0], [12, 30], [8, 30]], top_m: 5 },
   );
   const p = validatePlan(raw);
@@ -73,6 +73,23 @@ test('crosswalk stripes get a sane width', () => {
   const raw = base();
   raw.markings[0].dash_m = 0;
   assert.equal(validatePlan(raw).markings[0].dash_m, 0.5);
+});
+
+test('dashed lines get safe dashes', () => {
+  const raw = base();
+  raw.markings = [
+    { id: 'd1', kind: 'lane_dashed', points: [[0, 0], [0, 50]], dash_m: 0, gap_m: 0 },
+    { id: 'd2', kind: 'lane_dashed', points: [[0, 0], [0, 50]], dash_m: 0.0001, gap_m: 0.0001 },
+  ];
+  const m = validatePlan(raw).markings;
+  assert.deepEqual([m[0].dash_m, m[0].gap_m], [3, 6]);
+  assert.deepEqual([m[1].dash_m, m[1].gap_m], [0.3, 0.3]);
+});
+
+test('drops crosswalks longer than 60 m', () => {
+  const raw = base();
+  raw.markings = [{ ...raw.markings[0], id: 'long', points: [[-40, 20], [40, 20]] }];
+  assert.equal(validatePlan(raw).markings.length, 0);
 });
 
 test('overlay boxes are ordered and clamped; broken ones dropped', () => {
@@ -113,4 +130,14 @@ test('refuses a patch that leaves no surfaces, or is not an object', () => {
   assert.equal(applyPatch(p, { remove: ['s1'] }), p);
   assert.equal(applyPatch(p, null), p);
   assert.equal(applyPatch(p, 'oops'), p);
+});
+
+test('a broken replacement keeps the original', () => {
+  const p0 = validatePlan(base());
+  const s2 = { id: 's2', kind: 'sidewalk', material: null, polygon: [[8, 0], [12, 0], [12, 30], [8, 30]], top_m: 0.1 };
+  const p = applyPatch(p0, { surfaces: [s2], remove: [] });
+  assert.equal(p.surfaces.length, 2);
+  const next = applyPatch(p, { surfaces: [{ ...p.surfaces[0], polygon: [[0, 0]] }], materials: [], markings: [], objects: [], vehicles: [], remove: [] });
+  assert.deepEqual(next.surfaces.map((s) => s.id), ['s1', 's2']);
+  assert.deepEqual(next.surfaces[0].polygon, p.surfaces[0].polygon);
 });
