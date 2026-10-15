@@ -7,6 +7,7 @@ import { decodeScan } from './scan-format.js';
 import { validatePlan } from './plan.js';
 import { refineLoop } from './refine-loop.js';
 import { renderViews } from './refine.js';
+import { surfaceTopAt } from './scenebuild.js';
 
 const $ = (s) => document.querySelector(s);
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -90,6 +91,18 @@ function walkPose(info) {
   return { position: new THREE.Vector3(0, 0, 0), quaternion: info.startQuat.clone(), fov: info.walkFov(camera.aspect) };
 }
 
+// Stand the walker on the ground of the world as it is now: a correction round can
+// move the ground under someone walking (Claude often corrects the camera height).
+function reseat() {
+  const plan = current && current.sceneInfo;
+  if (!collider || !plan || !plan.surfaces) return;
+  const x = camera.position.x, z = camera.position.z;
+  const ground = surfaceTopAt(plan, x, -z) - Number(plan.camera.height_m);
+  const foot = collider.floorAt(x, z, ground + 0.5);
+  walk.foot = foot == null ? ground : foot;
+  camera.position.y = walk.foot + walk.eye;
+}
+
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
 function flyTo(pose, ms, done) {
@@ -108,7 +121,7 @@ function setMode(next) {
     const pose = walkPose(world.info);
     flyTo(pose, 1900, () => {
       mode = 'walk'; walk.enabled = true; walk.syncFromCamera();
-      if (pose.foot != null) walk.foot = pose.foot;
+      reseat();   // the world may have been rebuilt during the flight
       $('#stick').hidden = !coarse;
       showHint();
     });
@@ -171,7 +184,7 @@ function setWorld({ scan, photo, photoHi = null, name, sceneInfo = null }, { aut
   walk.speed = world.info.speed;
   describe(world.info, name);
   if (keepCamera) {
-    if (mode === 'walk') camera.fov = world.info.walkFov(camera.aspect);
+    if (mode === 'walk') { camera.fov = world.info.walkFov(camera.aspect); reseat(); }
     camera.updateProjectionMatrix();
     return;
   }
@@ -636,10 +649,11 @@ window.__pw = {
   get planState() { return planState; },
   views() { return this.plan ? renderViews(renderer, scene, this.plan, current.photoHi || current.photo, world) : null; },
   // Build the current photo from a plan without calling Claude (tests and debugging).
-  setPlan(raw) {
+  // opts takes { keepCamera: true } to rebuild the way a correction round does.
+  setPlan(raw, opts = {}) {
     const p = validatePlan(raw);
     if (!p || !p.surfaces.length || !current || !lastScan) return null;
-    setWorld({ ...current, scan: keepRealSubjects(lastScan, p), sceneInfo: p });
+    setWorld({ ...current, scan: keepRealSubjects(lastScan, p), sceneInfo: p }, opts);
     return p;
   },
 };
