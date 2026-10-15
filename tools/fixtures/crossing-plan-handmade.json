@@ -1,0 +1,33 @@
+{
+  "caption": "Two-lane road with a crosswalk",
+  "scene_type": "road",
+  "camera": { "height_m": 4.4, "pitch_deg": 13, "hfov_deg": 43 },
+  "ground_polygon": [{ "x": 0.05, "y": 0.35 }, { "x": 0.95, "y": 0.35 }, { "x": 0.95, "y": 1 }, { "x": 0.05, "y": 1 }],
+  "subjects": [],
+  "vehicles": [],
+  "sky": { "top": "#9fc0e8", "horizon": "#d3dee8" },
+  "ground_color": "#6f7a5a",
+  "overlays": [],
+  "materials": [
+    { "id": "mat-asphalt", "kind": "asphalt", "color": "#6b6d70", "sample_box": [0.36, 0.2, 0.46, 0.3] },
+    { "id": "mat-grass", "kind": "grass", "color": "#5f8a3e", "sample_box": [0.02, 0.5, 0.1, 0.6] },
+    { "id": "mat-hedge", "kind": "hedge", "color": "#4d6b34", "sample_box": [0.75, 0.25, 0.85, 0.35] }
+  ],
+  "surfaces": [
+    { "id": "s-road", "kind": "road", "material": "mat-asphalt", "polygon": [[-7, -40], [8, -40], [8, 120], [-7, 120]], "top_m": 0 },
+    { "id": "s-median", "kind": "median", "material": "mat-grass", "polygon": [[-12, 12], [-8, 12], [-8, 120], [-12, 120]], "top_m": 0.15 },
+    { "id": "s-verge", "kind": "verge", "material": "mat-grass", "polygon": [[8, -40], [14, -40], [14, 120], [8, 120]], "top_m": 0.15 }
+  ],
+  "markings": [
+    { "id": "m-cross", "kind": "crosswalk", "color": "#f0f0f0", "color2": "#e8c84a", "points": [[-6.5, 20], [7.5, 20]], "width_m": 3.5, "dash_m": 0.5, "gap_m": 0.5 },
+    { "id": "m-centre", "kind": "lane_dashed", "color": "#f2f2f2", "color2": "#f2f2f2", "points": [[0.5, 24], [0.5, 110]], "width_m": 0.15, "dash_m": 3, "gap_m": 6 }
+  ],
+  "objects": [
+    { "id": "o-sign", "kind": "sign", "at": [-8.5, 19], "path": null, "height_m": 3, "width_m": 0.7, "depth_m": 0.05, "heading_deg": 0, "material": null, "color": "#8a8f96", "seen": true, "sign": { "shape": "square", "face_color": "#2a6bd6", "symbol": "pedestrian_crossing" } },
+    { "id": "o-hedge", "kind": "hedge", "at": null, "path": [[10, 8], [10.5, 60]], "height_m": 1.1, "width_m": 1.5, "depth_m": 1.5, "heading_deg": 0, "material": "mat-hedge", "color": "#4d6b34", "seen": true, "sign": null },
+    { "id": "o-tree", "kind": "tree", "at": [12, 45], "path": null, "height_m": 7, "width_m": 4, "depth_m": 4, "heading_deg": 0, "material": "mat-hedge", "color": "#4d6b34", "seen": false, "sign": null },
+    { "id": "o-lamp", "kind": "lamp_post", "at": [-9, 35], "path": null, "height_m": 8, "width_m": 0.2, "depth_m": 0.2, "heading_deg": 90, "material": null, "color": "#8a8f96", "seen": false, "sign": null }
+  ],
+  "extent_m": 60,
+  "notes": "Handmade test plan"
+}

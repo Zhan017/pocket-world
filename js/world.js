@@ -15,6 +15,7 @@ import { pullPush, fillCloned, rankFilter, boxBlur, resample, percentile } from 
 import { buildSurroundings } from './surroundings.js';
 import { samplePoints, fitObject } from './objects3d.js';
 import { buildCar, canBuild, photoDepth, matchPaint, carMaterial, carShadow } from './carmodel.js';
+import { buildPlanScene } from './scenebuild.js';
 
 const VEHICLES = new Set(['car', 'truck', 'bus', 'motorcycle', 'bicycle']);
 
@@ -122,10 +123,13 @@ function texFrom(canvas) {
  * @param {{strength?: number, scene?: object}} opts
  *   strength  depth strength, 0.5 (flat) to 2 (deep), used when depth isn't measured
  *   scene     Claude's description of the photo (api/scene.js), optional
+ *   photoHi   the photo at up to 2576 px, used to paint Claude's plan of the place (optional)
  */
-export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
+export function buildWorld(scan, photo, { strength = 1, scene = null, photoHi = null } = {}) {
   const W = scan.width, H = scan.height;
   const L = Math.max(W, H);
+  // Claude's full plan of the place replaces the depth sheet (layers A and B).
+  const planMode = Boolean(scene && Array.isArray(scene.surfaces) && scene.surfaces.length);
   const hfov = scene ? clamp(Number(scene.camera?.hfov_deg) || 0, 0, 120) : 0;
   const f = hfov >= 25 ? (W / 2) / Math.tan((hfov * Math.PI) / 360) : (L / 2) / Math.tan((FOV_LONG_DEG * Math.PI) / 360);
   const cx = W / 2, cy = H / 2;
@@ -373,11 +377,11 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
   const matA = worldMat(texACanvas, 1);
   const meshA = new THREE.Mesh(A.main, matA);
   const meshB = new THREE.Mesh(B.main, worldMat(texBCanvas, 0.94));
-  content.add(meshB, meshA);
+  if (!planMode) content.add(meshB, meshA);
   // Torn triangles keep the photo pixel-perfect from where it was taken,
   // then dissolve as soon as you move, revealing layer B.
   let edgeMat = null;
-  if (A.edge) {
+  if (A.edge && !planMode) {
     edgeMat = new THREE.ShaderMaterial({
       vertexShader: worldVert, fragmentShader: worldFrag, side: THREE.DoubleSide, transparent: true, depthWrite: false,
       uniforms: { ...matA.uniforms, opacity: { value: 1 } },
@@ -495,6 +499,23 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
   sky.renderOrder = -1;
   group.add(sky);
 
+  // --- Claude's plan of the place ------------------------------------------
+  // People and cars keep their own placement above; the plan's surfaces and
+  // objects take the depth sheet's place.
+  let planScene = null;
+  if (planMode) {
+    const nd = document.createElement('canvas'); nd.width = W; nd.height = H;
+    const ndc = nd.getContext('2d');
+    const ndi = ndc.createImageData(W, H);
+    for (let i = 0; i < W * H; i++) {
+      const v = maskWide[i] > 0.5 ? 255 : 0;
+      ndi.data[i * 4] = ndi.data[i * 4 + 1] = ndi.data[i * 4 + 2] = v; ndi.data[i * 4 + 3] = 255;
+    }
+    ndc.putImageData(ndi, 0, 0);
+    planScene = buildPlanScene(scene, { photo: photoHi || photo, noData: nd });
+    group.add(planScene.group);
+  }
+
   // --- Numbers the viewer needs -------------------------------------------
   const zs = [];
   for (let i = 0; i < dnFill.length; i += 7) zs.push(zOf(dnFill[i]));
@@ -509,7 +530,9 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
   const nearestZ = subjects.reduce((m, s) => Math.min(m, s.z / unit), Infinity);
   const room = Number.isFinite(nearestZ) ? Math.min(1, Math.max(0.4, nearestZ / 3)) : 1;
   const reach = room * unit * (withSurroundings ? 1.8 : 1);
-  const bounds = { minX: -0.45 * reach, maxX: 0.45 * reach, minZ: -0.9 * reach, maxZ: 0.35 * reach };
+  const bounds = planMode
+    ? { minX: -0.6 * scene.extent_m, maxX: 0.6 * scene.extent_m, minZ: -0.6 * scene.extent_m, maxZ: 0.6 * scene.extent_m }
+    : { minX: -0.45 * reach, maxX: 0.45 * reach, minZ: -0.9 * reach, maxZ: 0.35 * reach };
 
   // --- Surroundings beyond the frame --------------------------------------
   let surroundings = null;
@@ -581,6 +604,11 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
     sky.geometry.dispose(); sky.material.dispose();
     textures.forEach(t => t.dispose());
     if (surroundings) surroundings.dispose();
+    if (planScene) {
+      planScene.dispose();
+      // Built but never added to `content`, so the traverse above missed them.
+      A.main.dispose(); if (A.edge) A.edge.dispose(); B.main.dispose(); matA.dispose(); meshB.material.dispose();
+    }
   }
 
   // With measured depth, rest a model on the ground. Scaling about the camera
@@ -709,16 +737,19 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
 
   return {
     group, update, dispose, attachModel,
+    prepare: (renderer) => { if (planScene) planScene.prepare(renderer); },
+    planScene,
     models: () => objects.filter((o) => o.model).map((o) => o.model),
     info: {
       width: W, height: H, near, far, zMedian, bounds, sphere, walkFov, startQuat, focus,
-      speed: 0.42 * room * unit,
+      speed: planMode ? 2 : 0.42 * room * unit,
       triangles: A.tris + B.tris,
       subjects: [...subjects.map(s => s.label), ...objects.map(o => o.label)],
       objects: objects.map((o) => ({ label: o.label, box: o.box, crop: o.crop, alpha: o.alpha, built: o.modelKind === 'claude', name: (o.vehicle && String(o.vehicle.make_model || '').slice(0, 40)) || '', fit: o.carFit ? { iou: o.carFit.iou, yaw: o.carFit.yaw } : null })),
       measured: Boolean(calib), calib, levelled: Boolean(scene), surroundings: withSurroundings,
+      plan: planMode,
       caption: scene?.caption || '',
     },
-    fog: surroundings ? surroundings.fog : null,
+    fog: planScene ? planScene.fog : surroundings ? surroundings.fog : null,
   };
 }

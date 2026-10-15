@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { buildWorld } from './world.js';
 import { WalkControls } from './controls.js';
 import { decodeScan } from './scan-format.js';
+import { validatePlan } from './plan.js';
 
 const $ = (s) => document.querySelector(s);
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -33,6 +34,7 @@ const walk = new WalkControls(camera, canvas, $('#stick'));
 // ---------------------------------------------------------------- state
 let world = null;
 let current = null;           // { scan, photo, name }
+let lastScan = null;
 let mode = 'diorama';         // 'diorama' | 'walk' | 'flying'
 let strength = 1;
 let lastInteract = performance.now();
@@ -121,11 +123,12 @@ function describe(info, name) {
   depth.title = info.measured ? 'Depth is measured from the ground in this world' : '';
 }
 
-function setWorld({ scan, photo, name, sceneInfo = null }, { autoWalk = false, keepCamera = false } = {}) {
-  const next = buildWorld(scan, photo, { strength, scene: sceneInfo });
+function setWorld({ scan, photo, photoHi = null, name, sceneInfo = null }, { autoWalk = false, keepCamera = false } = {}) {
+  const next = buildWorld(scan, photo, { strength, scene: sceneInfo, photoHi });
+  next.prepare(renderer);   // the plan scene's depth pass, before it joins the scene
   if (world) { scene.remove(world.group); world.dispose(); }
   world = next;
-  current = { scan, photo, name, sceneInfo };
+  current = { scan, photo, photoHi, name, sceneInfo };
   scene.add(world.group);
   scene.fog = world.fog;
   walk.bounds = world.info.bounds;
@@ -435,6 +438,11 @@ async function processFile(file) {
     const photo = document.createElement('canvas'); photo.width = W; photo.height = H;
     const ctx = photo.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(bitmap, 0, 0, W, H);
+    // Claude and the plan's projected texture get up to 2576 px (Opus's high-resolution limit).
+    const sHi = Math.min(1, 2576 / Math.max(bitmap.width, bitmap.height));
+    const photoHi = document.createElement('canvas');
+    photoHi.width = Math.max(8, Math.round(bitmap.width * sHi)); photoHi.height = Math.max(8, Math.round(bitmap.height * sHi));
+    photoHi.getContext('2d').drawImage(bitmap, 0, 0, photoHi.width, photoHi.height);
     bitmap.close?.();
     const rgba = ctx.getImageData(0, 0, W, H).data;
     setStep('models');
@@ -443,6 +451,7 @@ async function processFile(file) {
       pending.set('job', { resolve, reject, id: ++jobId });
       w.postMessage({ type: 'scan', rgba: rgba.buffer, width: W, height: H }, [rgba.buffer]);
     });
+    lastScan = scan;
     let sceneInfo = null, sceneError = '';
     if (smartOn()) {
       setStep('claude');
@@ -450,7 +459,7 @@ async function processFile(file) {
       catch (e) { sceneError = e.name === 'AbortError' ? 'Claude took too long' : e.message; }
     }
     setStep('build'); await frame(); await frame();
-    setWorld({ scan: keepRealSubjects(scan, sceneInfo), photo, name: file.name || 'your photo', sceneInfo }, { autoWalk: true });
+    setWorld({ scan: keepRealSubjects(scan, sceneInfo), photo, photoHi, name: file.name || 'your photo', sceneInfo }, { autoWalk: true });
     status3d(builtStatus(world));
     if (objectsOn() && world.info.objects.length) build3dObjects(photo, world);
     if (sceneError) toast(`Built the world without Claude (${sceneError}).`);
@@ -491,6 +500,7 @@ async function loadSample() {
     fetch('sample/forest-path.scene.json').then(r => (r.ok ? r.json() : null)).catch(() => null),
   ]);
   const scan = decodeScan(buf);
+  lastScan = scan;
   const photo = document.createElement('canvas'); photo.width = scan.width; photo.height = scan.height;
   photo.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0, scan.width, scan.height);
   setWorld({ scan: keepRealSubjects(scan, sceneInfo), photo, name: 'forest-path.jpg', sceneInfo });
@@ -498,5 +508,16 @@ async function loadSample() {
 loadSample().catch(() => toast('The sample world did not load. You can still use your own photo.'));
 
 // For automated checks.
-window.__pw = { timings, get mode() { return mode; }, get world() { return world; }, setMode, processFile, camera, walk, orbit, renderer, scene };
+window.__pw = {
+  timings, get mode() { return mode; }, get world() { return world; }, setMode, processFile, camera, walk, orbit, renderer, scene,
+  get plan() { return current?.sceneInfo?.surfaces ? current.sceneInfo : null; },
+  get lastScan() { return lastScan; },
+  // Build the current photo from a plan without calling Claude (tests and debugging).
+  setPlan(raw) {
+    const p = validatePlan(raw);
+    if (!p || !p.surfaces.length || !current || !lastScan) return null;
+    setWorld({ ...current, scan: keepRealSubjects(lastScan, p), sceneInfo: p });
+    return p;
+  },
+};
 window.__THREE = THREE;
