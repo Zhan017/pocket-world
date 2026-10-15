@@ -100,3 +100,17 @@ test('no dead band between climbing and blocking', () => {
   const high = world([{ x0: 1, x1: 5, z0: -5, z1: 5, top: 0.37 }]);
   assert.deepEqual(walkStep({ x: 0.9, z: 0, foot: 0 }, 0.2, 0, high.floorAt, high.hitAhead), { x: 0.9, z: 0, foot: 0 });
 });
+
+test('a thin post never slips between the rays', () => {
+  // A 0.2 m post (the narrowest solid the scene builds) anywhere across the body's width.
+  for (let off = -0.3; off <= 0.3001; off += 0.05) {
+    const post = { x0: off - 0.1, x1: off + 0.1, z0: -1.1, z1: -0.9, top: 2 };
+    const w = world([post]);
+    let at = { x: 0, z: 0, foot: 0 };
+    for (let i = 0; i < 60; i++) {
+      at = walkStep(at, 0, -0.03, w.floorAt, w.hitAhead);
+      const inside = at.x > post.x0 - 0.15 && at.x < post.x1 + 0.15 && at.z > post.z0 - 0.15 && at.z < post.z1 + 0.15;
+      assert.ok(!inside, `walked into a post at offset ${off.toFixed(2)}: ${JSON.stringify(at)}`);
+    }
+  }
+});

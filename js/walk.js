@@ -20,11 +20,11 @@ const MAX_DROP = 3;   // metres you may step down in one go (kerbs, banks), not 
 export function walkStep(at, dx, dz, floorAt, hitAhead, { eye = 1.6, step = 0.35, radius = 0.3 } = {}) {
   const knee = at.foot + step + 0.01;
   const heights = [knee, at.foot + 1.2, at.foot + eye - 0.1];   // knee, chest, head
-  // The first face the body would touch moving (mx, mz): rays from its centre
-  // and both sides, at each height.
+  // The first face the body would touch moving (mx, mz): rays from its centre,
+  // halfway out and its sides (0.15 m apart for the usual 0.3 m), at each height.
   const obstacle = (mx, mz) => {
     const len = Math.hypot(mx, mz), ux = mx / len, uz = mz / len, px = -uz, pz = ux;
-    for (const y of heights) for (const s of [0, -radius, radius]) {
+    for (const y of heights) for (const s of [0, -radius / 2, radius / 2, -radius, radius]) {
       const hit = hitAhead(at.x + px * s, y, at.z + pz * s, ux, uz, len + radius);
       if (hit) return hit;
     }

@@ -161,6 +161,9 @@ function crosswalkGeometries(m, y) {
 }
 
 // Meshes for one object: a list of [geometry, material id or null, color].
+// Posts thinner than this get an invisible, fatter stand-in so the walking rays
+// (0.15 m apart, js/walk.js) can't slip past them.
+const SOLID_POST = 0.1;
 // kindOf(materialId) gives a plan material's kind ('bark', 'foliage', ...) or null.
 function objectParts(o, h, topAt, kindOf = () => null) {
   const parts = [];
@@ -169,17 +172,22 @@ function objectParts(o, h, topAt, kindOf = () => null) {
   const yAt = (p) => -h + topAt(p[0], p[1]);
   const put = (geo, p, heading = o.heading_deg) => geo.applyMatrix4(new THREE.Matrix4().makeRotationY((heading * Math.PI) / 180).setPosition(p[0], yAt(p), -p[1]));
   const cyl = (rad, len) => new THREE.CylinderGeometry(rad, rad, len, 8).translate(0, len / 2, 0);
+  // An upright post: the visible cylinder, plus a collision-only stand-in when it is thinner than SOLID_POST.
+  const upright = (rad, len, p, mat, hex, heading) => {
+    parts.push([put(cyl(rad, len), p, heading), mat, hex]);
+    if (rad < SOLID_POST) parts.push([put(cyl(SOLID_POST, len), p, heading), null, null, 'solid']);
+  };
   const along = (a, b, geo) => {
     const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
     return geo.applyMatrix4(new THREE.Matrix4().makeRotationY(Math.atan2(b[1] - a[1], b[0] - a[0])).setPosition(mid[0], yAt(mid), -mid[1]));
   };
   switch (o.kind) {
     case 'pole': case 'bollard':
-      if (at) parts.push([put(cyl(Math.max(o.kind === 'pole' ? 0.04 : 0.08, o.width_m / 2), H), at), o.material, o.color]);
+      if (at) upright(Math.max(o.kind === 'pole' ? 0.04 : 0.08, o.width_m / 2), H, at, o.material, o.color);
       break;
     case 'lamp_post':
       if (!at) break;
-      parts.push([put(cyl(0.08, H), at), o.material, o.color]);
+      upright(0.08, H, at, o.material, o.color);
       parts.push([put(new THREE.BoxGeometry(1.6, 0.08, 0.08).translate(0.8, H, 0), at), o.material, o.color]);
       parts.push([put(new THREE.BoxGeometry(0.5, 0.12, 0.25).translate(1.5, H - 0.08, 0), at), null, '#d8d8d0']);
       break;
@@ -187,13 +195,13 @@ function objectParts(o, h, topAt, kindOf = () => null) {
       if (!at) break;
       const w = Math.max(0.3, o.width_m), ph = o.sign && o.sign.shape === 'rectangle' ? w * 0.6 : w;
       const post = Math.max(0.5, H - ph);
-      parts.push([put(cyl(0.04, post), at), null, GREY]);
+      upright(0.04, post, at, null, GREY);
       parts.push([put(new THREE.BoxGeometry(w, ph, 0.04).translate(0, post + ph / 2, 0), at), null, o.sign ? o.sign.face_color : o.color]);
       break;
     }
     case 'traffic_light':
       if (!at) break;
-      parts.push([put(cyl(0.08, H), at), null, GREY]);
+      upright(0.08, H, at, null, GREY);
       parts.push([put(new THREE.BoxGeometry(0.35, 0.95, 0.3).translate(0, H - 0.5, 0.2), at), null, '#2b2d30']);
       break;
     case 'tree': {
@@ -201,7 +209,7 @@ function objectParts(o, h, topAt, kindOf = () => null) {
       const rad = Math.min(8, Math.max(0.8, o.width_m / 2));
       // A tree's material may be its bark (trunk) or its leaves (crown).
       const bark = kindOf(o.material) === 'bark';
-      parts.push([put(cyl(0.15, H * 0.5), at), bark ? o.material : null, '#5b4636']);
+      upright(0.15, H * 0.5, at, bark ? o.material : null, '#5b4636');
       const crown = new THREE.IcosahedronGeometry(rad, 1);
       crown.scale(1, 1.15, 1);
       crown.translate(0, Math.max(rad, H - rad * 1.1), 0);
@@ -243,7 +251,7 @@ function objectParts(o, h, topAt, kindOf = () => null) {
       if (len < 1) break;
       const beam = Math.max(0.4, o.depth_m);
       parts.push([along(a, b, new THREE.BoxGeometry(len, beam, 0.6).translate(0, H + beam / 2, 0)), o.material, o.color]);
-      for (const p of [a, b]) parts.push([put(cyl(0.25, H + beam), p, 0), null, GREY]);
+      for (const p of [a, b]) upright(0.25, H + beam, p, null, GREY, 0);
       break;
     }
     default:
@@ -322,7 +330,14 @@ export function buildPlanScene(plan, { photo, noData = null }) {
     }
   }
   const kinds = new Map(plan.materials.map((m) => [m.id, m.kind]));
-  for (const o of plan.objects) for (const [geo, matId, hex] of objectParts(o, h, topAt, (id) => kinds.get(id) || null)) add(geo, materialFor(matId, hex));
+  const solidMat = keep(new THREE.MeshBasicMaterial());
+  for (const o of plan.objects) {
+    for (const [geo, matId, hex, role] of objectParts(o, h, topAt, (id) => kinds.get(id) || null)) {
+      if (role !== 'solid') { add(geo, materialFor(matId, hex)); continue; }
+      const stand = add(geo, solidMat);   // walking collision only, never drawn
+      stand.visible = false;
+    }
+  }
   // Ground to the horizon, so the photo's far road still has something to land on.
   const disc = new THREE.CircleGeometry(2400, 64);
   disc.rotateX(-Math.PI / 2);
