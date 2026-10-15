@@ -258,7 +258,7 @@ function planPrompt(W, H, subjects) {
   return `The image above is the photo, ${W}x${H} pixels.
 Detected subjects:
 ${list}
-Describe the whole place as a plan.`;
+Describe the whole place as a plan and submit it by calling submit_plan once.`;
 }
 
 function refinePrompt(round, planJson) {
@@ -269,7 +269,7 @@ Image 4: top-down map. Forward is up, the camera is the white triangle at the ce
 Image 5: looking back toward the camera from 15 m in front of it.
 Current plan:
 ${planJson}
-Return only what should change: corrected or new elements (complete, with their ids) in materials, surfaces, markings, objects and vehicles, ids to delete in remove, and the full camera even if unchanged. Fix the biggest problems first: a wrong camera height, tilt or field of view shifts everything, so correct the camera before moving many elements. Set done to true when nearby visible things line up within about half a metre and nothing important is missing.`;
+Return only what should change: corrected or new elements (complete, with their ids) in materials, surfaces, markings, objects and vehicles, ids to delete in remove, and the full camera even if unchanged. Fix the biggest problems first: a wrong camera height, tilt or field of view shifts everything, so correct the camera before moving many elements. Set done to true when nearby visible things line up within about half a metre and nothing important is missing. Submit your changes by calling submit_patch once.`;
 }
 
 const SYSTEM = `You read a single photo so a web app can turn it into a small 3D world the viewer can walk around in.
@@ -299,9 +299,11 @@ function send(res, status, body) {
 const cleanB64 = (v) => (typeof v === 'string' ? v.replace(/^data:image\/\w+;base64,/, '') : '');
 const fail = (status, message) => Object.assign(new Error(message), { status });
 
-// One structured-output call to the plan model. The whole answer has to arrive
-// inside one function run, so it is cut off a little before Vercel's limit.
-async function callClaude(key, { content, schema, maxTokens }) {
+// One call to the plan model; the answer comes back as the input of a tool call
+// (the combined schemas are too big for structured outputs, so the tool is not
+// strict and tool_choice stays auto). The whole answer has to arrive inside one
+// function run, so it is cut off a little before Vercel's limit.
+async function callClaude(key, { content, tool, schema, maxTokens }) {
   const t0 = Date.now();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Number(process.env.PLAN_TIMEOUT_MS) || 280000);
@@ -316,7 +318,9 @@ async function callClaude(key, { content, schema, maxTokens }) {
         max_tokens: maxTokens,
         system: PLAN_SYSTEM,
         thinking: { type: 'adaptive' },
-        output_config: { effort: PLAN_EFFORT(), format: { type: 'json_schema', schema } },
+        output_config: { effort: PLAN_EFFORT() },
+        tools: [{ name: tool, description: 'Submit your answer.', input_schema: schema }],
+        tool_choice: { type: 'auto' },
         fallbacks: 'default',
         messages: [{ role: 'user', content }],
       }),
@@ -331,9 +335,9 @@ async function callClaude(key, { content, schema, maxTokens }) {
   }
   if (data.stop_reason === 'refusal') throw fail(502, 'Claude declined to describe this frame.');
   if (data.stop_reason === 'max_tokens') throw fail(502, 'Claude\'s answer was cut off.');
-  const text = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
-  try { return { json: JSON.parse(text), usage: data.usage, model: data.model, ms: Date.now() - t0 }; }
-  catch { throw fail(502, 'Claude returned an unreadable answer.'); }
+  const block = (data.content || []).find((c) => c.type === 'tool_use' && c.name === tool);
+  if (!block) throw fail(502, 'Claude did not return an answer.');
+  return { json: block.input, usage: data.usage, model: data.model, ms: Date.now() - t0 };
 }
 
 async function planAction(res, key, ip, body) {
@@ -345,11 +349,11 @@ async function planAction(res, key, ip, body) {
   const image = cleanB64(body.image);
   if (!image || image.length > MAX_FRAME_B64) return send(res, 400, { error: 'Send the frame as a base64 JPEG under about 1.9 MB in "image".' });
   const frame = { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image }, cache_control: { type: 'ephemeral' } };
-  let content, schema, maxTokens;
+  let content, tool, schema, maxTokens;
   if (isPlan) {
     const subjects = Array.isArray(body.subjects) ? body.subjects.slice(0, 12) : [];
     content = [frame, { type: 'text', text: planPrompt(Number(body.width) || 0, Number(body.height) || 0, subjects) }];
-    schema = PLAN_SCHEMA; maxTokens = 48000;
+    tool = 'submit_plan'; schema = PLAN_SCHEMA; maxTokens = 48000;
   } else {
     const renders = Array.isArray(body.renders) ? body.renders.map(cleanB64) : [];
     if (renders.length !== 4 || renders.some((r) => !r || r.length > MAX_RENDER_B64)) return send(res, 400, { error: 'Send exactly 4 renders as base64 JPEGs in "renders".' });
@@ -361,10 +365,10 @@ async function planAction(res, key, ip, body) {
       ...renders.flatMap((data, i) => [{ type: 'text', text: `Image ${i + 2}:` }, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } }]),
       { type: 'text', text: refinePrompt(round, planJson) },
     ];
-    schema = PATCH_SCHEMA; maxTokens = 24000;
+    tool = 'submit_patch'; schema = PATCH_SCHEMA; maxTokens = 24000;
   }
   let out;
-  try { out = await callClaude(key, { content, schema, maxTokens }); }
+  try { out = await callClaude(key, { content, tool, schema, maxTokens }); }
   catch (e) { return send(res, e.status || 502, { error: e.message }); }
   return send(res, 200, { [isPlan ? 'plan' : 'patch']: out.json, usage: out.usage, model: out.model, ms: out.ms });
 }

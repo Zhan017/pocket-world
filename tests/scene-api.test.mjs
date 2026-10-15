@@ -21,10 +21,16 @@ let reply = null;
 beforeEach(() => {
   calls = [];
   delete process.env.PLAN_TIMEOUT_MS;
-  reply = { model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 20 }, content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: '{"hello":1}' }] };
+  reply = { model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 20 } };
   globalThis.fetch = async (url, init) => {
-    calls.push({ url, init, body: JSON.parse(init.body) });
-    return { ok: true, status: 200, json: async () => reply };
+    const body = JSON.parse(init.body);
+    calls.push({ url, init, body });
+    const content = reply.content || [
+      { type: 'thinking', thinking: '' },
+      { type: 'text', text: '{"hello":1}' },
+      ...(body.tools ? [{ type: 'tool_use', id: 'tu_1', name: body.tools[0].name, input: { hello: 1 } }] : []),
+    ];
+    return { ok: true, status: 200, json: async () => ({ ...reply, content }) };
   };
 });
 
@@ -44,7 +50,11 @@ test('plan sends the frame to Opus with the plan schema', async () => {
   assert.equal(body.model, 'claude-opus-5-5');
   assert.deepEqual(body.thinking, { type: 'adaptive' });
   assert.equal(body.output_config.effort, 'high');
-  assert.deepEqual(body.output_config.format.schema, PLAN_SCHEMA);
+  assert.equal(body.output_config.format, undefined);
+  assert.equal(body.tools[0].name, 'submit_plan');
+  assert.deepEqual(body.tools[0].input_schema, PLAN_SCHEMA);
+  assert.equal(body.tools[0].strict, undefined);
+  assert.deepEqual(body.tool_choice, { type: 'auto' });
   assert.equal(body.fallbacks, 'default');
   assert.match(init.headers['anthropic-beta'], /server-side-fallback-2026-07-01/);
   const first = body.messages[0].content[0];
@@ -60,7 +70,8 @@ test('refine sends the frame, four renders and the plan, and returns a patch', a
   assert.deepEqual(json(r).patch, { hello: 1 });
   const content = calls[0].body.messages[0].content;
   assert.equal(content.filter((c) => c.type === 'image').length, 5);
-  assert.deepEqual(calls[0].body.output_config.format.schema, PATCH_SCHEMA);
+  assert.equal(calls[0].body.tools[0].name, 'submit_patch');
+  assert.deepEqual(calls[0].body.tools[0].input_schema, PATCH_SCHEMA);
   assert.match(content.at(-1).text, /Round 2/);
 });
 
@@ -90,6 +101,14 @@ test('a refusal or a cut-off answer is a 502', async () => {
   r = res();
   await handler(req({ action: 'plan', image: jpeg(), width: 10, height: 10 }), r);
   assert.equal(r.statusCode, 502);
+});
+
+test('an answer without the tool call is a 502', async () => {
+  reply = { ...reply, content: [{ type: 'text', text: '{"hello":1}' }] };
+  const r = res();
+  await handler(req({ action: 'plan', image: jpeg(), width: 10, height: 10 }), r);
+  assert.equal(r.statusCode, 502);
+  assert.match(json(r).error, /did not return/);
 });
 
 test('times out cleanly', async () => {
@@ -144,6 +163,7 @@ test('the old request is unchanged', async () => {
   assert.equal(calls[0].body.model, 'claude-haiku-5-5');
   assert.deepEqual(calls[0].body.output_config.format.schema, SCHEMA);
   assert.equal(calls[0].body.thinking, undefined);
+  assert.equal(calls[0].body.tools, undefined);
 });
 
 test('schemas only use what structured outputs support', () => {
