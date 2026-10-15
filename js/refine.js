@@ -102,18 +102,24 @@ function drawLabels(g, camera, w, h, plan) {
  * @param {THREE.Scene} scene  the page's scene with the world built from `plan`
  * @param {object} plan  the plan that world was built from
  * @param {HTMLCanvasElement} frame  the photo
- * @param {{setFog?: (on: boolean) => void}} [planScene]  to switch fog off for the map
+ * @param {{planScene?: object, update?: (t: number, camera: THREE.Camera) => void}} [world]
+ *   the world built from `plan`: its fog is switched off for the map, and its people
+ *   and cars are turned toward each view's camera (the 3D car shows away from the photo's pose)
  */
-export function renderViews(renderer, scene, plan, frame, planScene = null) {
+export function renderViews(renderer, scene, plan, frame, world = null) {
   const sc = OUT_W / Math.max(frame.width, frame.height);
   const w = Math.round(frame.width * sc), h = Math.round(frame.height * sc);
   const ch = plan.camera.height_m;
+  const planScene = world ? world.planScene : null;
+  // People face, and cars cross-fade from photo to model, by the camera looking at them.
+  const face = (cam) => { if (world && world.update) world.update(0, cam); };
 
   // 1 and 2: the photo's camera.
   const cam = photoCamera({ W: w, H: h, hfovDeg: plan.camera.hfov_deg, pitchDeg: plan.camera.pitch_deg, heightM: ch });
   const pc = new THREE.PerspectiveCamera((2 * Math.atan(h / 2 / cam.f) * 180) / Math.PI, w / h, 0.3, 4000);
   pc.rotation.x = -cam.pitch;
   pc.updateProjectionMatrix(); pc.updateMatrixWorld(true);
+  face(pc);
   const base = shoot(renderer, scene, pc, w, h);
   const camView = copy(base);
   const g1 = camView.getContext('2d');
@@ -132,6 +138,7 @@ export function renderViews(renderer, scene, plan, frame, planScene = null) {
   const sceneFog = scene.fog;
   let map;
   try {
+    face(top);
     scene.fog = null; if (planScene?.setFog) planScene.setFog(false);
     map = shoot(renderer, scene, top, s, s);
   } finally {
@@ -150,6 +157,7 @@ export function renderViews(renderer, scene, plan, frame, planScene = null) {
   const back = new THREE.PerspectiveCamera(70, w / h, 0.3, 4000);
   back.position.set(0, -ch + 1.7, -15); back.lookAt(0, -ch + 1.7, 0);
   back.updateProjectionMatrix(); back.updateMatrixWorld(true);
+  face(back);
   const backC = shoot(renderer, scene, back, w, h);
   drawLabels(backC.getContext('2d'), back, w, h, plan);
 

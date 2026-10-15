@@ -364,7 +364,7 @@ async function buildWithClaude(job, { scan, photo, photoHi, name }) {
   status3d(`Claude built the place · checking it (round 1 of ${PLAN_ROUNDS})`);
   const out = await refineLoop({
     plan, rounds: PLAN_ROUNDS,
-    render: async (p) => { const v = renderViews(renderer, scene, p, photoHi, world.planScene); return [v.camera, v.blend, v.top, v.back]; },
+    render: async (p) => { const v = renderViews(renderer, scene, p, photoHi, world); return [v.camera, v.blend, v.top, v.back]; },
     call: ({ round, renders, plan: p }) => sceneApi({ action: 'refine', image, renders, plan: p, round }),
     apply: (p) => { if (job === planJob) setWorld({ scan: keepRealSubjects(scan, p), photo, photoHi, name, sceneInfo: p }, { keepCamera: true }); },
     onRound: (info) => {
@@ -603,7 +603,7 @@ window.__pw = {
   get lastScan() { return lastScan; },
   planLog,
   get planState() { return planState; },
-  views() { return this.plan ? renderViews(renderer, scene, this.plan, current.photoHi || current.photo, world.planScene) : null; },
+  views() { return this.plan ? renderViews(renderer, scene, this.plan, current.photoHi || current.photo, world) : null; },
   // Build the current photo from a plan without calling Claude (tests and debugging).
   setPlan(raw) {
     const p = validatePlan(raw);
