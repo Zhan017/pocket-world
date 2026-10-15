@@ -494,6 +494,7 @@ async function processFile(file) {
   $('#busy').hidden = false;
   try {
     planJob++;
+    planState = 'idle'; planLog.length = 0; status3d('');
     let bitmap;
     try { bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
     catch { throw new Error('Your browser cannot open this photo format. Save it as JPG or PNG and try again.'); }

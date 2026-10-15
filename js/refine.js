@@ -11,13 +11,16 @@ const OUT_W = 1280;
 function shoot(renderer, scene, camera, w, h) {
   const rt = new THREE.WebGLRenderTarget(w, h);
   const prev = renderer.getRenderTarget();
-  renderer.setRenderTarget(rt);
-  renderer.clear();
-  renderer.render(scene, camera);
-  renderer.setRenderTarget(prev);
   const buf = new Uint8Array(w * h * 4);
-  renderer.readRenderTargetPixels(rt, 0, 0, w, h, buf);
-  rt.dispose();
+  try {
+    renderer.setRenderTarget(rt);
+    renderer.clear();
+    renderer.render(scene, camera);
+    renderer.readRenderTargetPixels(rt, 0, 0, w, h, buf);
+  } finally {
+    renderer.setRenderTarget(prev);
+    rt.dispose();
+  }
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const g = c.getContext('2d');
   const id = g.createImageData(w, h);
@@ -27,7 +30,12 @@ function shoot(renderer, scene, camera, w, h) {
 }
 
 const copy = (c) => { const d = document.createElement('canvas'); d.width = c.width; d.height = c.height; d.getContext('2d').drawImage(c, 0, 0); return d; };
-const b64 = (c) => c.toDataURL('image/jpeg', 0.85).split(',')[1];
+const b64 = (c) => {
+  for (const q of [0.85, 0.75, 0.65, 0.55, 0.45]) {
+    const b = c.toDataURL('image/jpeg', q).split(',')[1];
+    if (b.length <= 600_000 || q === 0.45) return b;
+  }
+};
 
 // Levelled-world point -> canvas pixel for a three.js camera, or null when it is behind it.
 function toScreen(camera, p, w, h) {
@@ -52,7 +60,8 @@ function polyline(g, camera, w, h, at, t0, t1, step) {
 // Ground grid at road level: every metre within 30 m, every 5 m beyond (brighter).
 function drawGrid(g, camera, w, h, plan, fine) {
   const E = plan.extent_m, y = -plan.camera.height_m + 0.05;
-  for (let k = -E; k <= E; k += fine ? 1 : 5) {
+  const step = fine ? 1 : 5;
+  for (let k = Math.ceil(-E / step) * step; k <= E; k += step) {
     const strong = k % 5 === 0;
     if (fine && !strong && Math.abs(k) > 30) continue;
     g.strokeStyle = strong ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.32)';
@@ -96,7 +105,8 @@ function drawLabels(g, camera, w, h, plan) {
  * @param {{setFog?: (on: boolean) => void}} [planScene]  to switch fog off for the map
  */
 export function renderViews(renderer, scene, plan, frame, planScene = null) {
-  const w = OUT_W, h = Math.round((OUT_W * frame.height) / frame.width);
+  const sc = OUT_W / Math.max(frame.width, frame.height);
+  const w = Math.round(frame.width * sc), h = Math.round(frame.height * sc);
   const ch = plan.camera.height_m;
 
   // 1 and 2: the photo's camera.
@@ -120,9 +130,13 @@ export function renderViews(renderer, scene, plan, frame, planScene = null) {
   top.position.set(0, 500, 0); top.up.set(0, 0, -1); top.lookAt(0, 0, 0);
   top.updateProjectionMatrix(); top.updateMatrixWorld(true);
   const sceneFog = scene.fog;
-  scene.fog = null; if (planScene?.setFog) planScene.setFog(false);
-  const map = shoot(renderer, scene, top, s, s);
-  scene.fog = sceneFog; if (planScene?.setFog) planScene.setFog(true);
+  let map;
+  try {
+    scene.fog = null; if (planScene?.setFog) planScene.setFog(false);
+    map = shoot(renderer, scene, top, s, s);
+  } finally {
+    scene.fog = sceneFog; if (planScene?.setFog) planScene.setFog(true);
+  }
   const g3 = map.getContext('2d');
   drawGrid(g3, top, s, s, plan, false);
   drawLabels(g3, top, s, s, plan);
