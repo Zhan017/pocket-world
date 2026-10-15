@@ -60,6 +60,7 @@ http.createServer((req, res) => {
   if (api) return runApi(api[1], req, res);
   let rel;
   try { rel = path.normalize(decodeURIComponent(url.pathname)); } catch { res.statusCode = 400; return res.end(); }
+  if (rel.includes('\0')) { res.statusCode = 400; return res.end(); }
   if (rel.endsWith(path.sep)) rel += 'index.html';
   const file = path.join(root, rel);
   if (!file.startsWith(root + path.sep)) { res.statusCode = 403; return res.end(); }
@@ -68,4 +69,4 @@ http.createServer((req, res) => {
     res.setHeader('Content-Type', TYPES[path.extname(file)] || 'application/octet-stream');
     res.end(buf);
   });
-}).listen(port, () => console.log(`Pocket World dev server on http://localhost:${port}`));
+}).listen(port, '127.0.0.1', () => console.log(`Pocket World dev server on http://localhost:${port}`));

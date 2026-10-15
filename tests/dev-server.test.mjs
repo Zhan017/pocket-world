@@ -46,3 +46,10 @@ test('rejects bodies over 4.5 MB like Vercel', () => withServer(async (base) => 
   const r = await fetch(`${base}/api/scene`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: 'x'.repeat(4.6e6) });
   assert.equal(r.status, 413);
 }));
+
+test('survives a NUL byte in the path', () => withServer(async (base) => {
+  const r = await fetch(`${base}/%00`);
+  assert.equal(r.status, 400);
+  const ok = await fetch(`${base}/`);
+  assert.equal(ok.status, 200);
+}));
