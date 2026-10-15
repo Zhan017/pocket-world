@@ -4,6 +4,10 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { buildWorld } from './world.js';
 import { WalkControls } from './controls.js';
 import { decodeScan } from './scan-format.js';
+import { validatePlan } from './plan.js';
+import { refineLoop } from './refine-loop.js';
+import { renderViews } from './refine.js';
+import { surfaceTopAt } from './scenebuild.js';
 
 const $ = (s) => document.querySelector(s);
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -33,6 +37,18 @@ const walk = new WalkControls(camera, canvas, $('#stick'));
 // ---------------------------------------------------------------- state
 let world = null;
 let current = null;           // { scan, photo, name }
+let lastScan = null;
+let collider = null;
+// Claude World (docs/superpowers/specs/2026-10-15-claude-world-design.md):
+// behind ?plan=1 while it is being built, so the live site is unchanged.
+const PLAN_MODE = new URLSearchParams(location.search).has('plan');
+// Walking collision (three-mesh-bvh from the CDN) is only loaded for Claude's world;
+// if it fails to load you still walk, just without collision.
+const { makeCollider = null } = PLAN_MODE ? await import('./collide.js').catch(() => ({})) : {};
+const PLAN_ROUNDS = 5;
+const planLog = [];
+let planJob = 0;
+let planState = 'idle';
 let mode = 'diorama';         // 'diorama' | 'walk' | 'flying'
 let strength = 1;
 let lastInteract = performance.now();
@@ -61,7 +77,30 @@ function dioramaPose(info) {
 }
 
 function walkPose(info) {
+  if (info.plan && collider) {
+    // Step down from the camera to the street, 3 m ahead of the point below it.
+    const foot = collider.floorAt(0, -3, 0);
+    if (foot != null) {
+      return {
+        position: new THREE.Vector3(0, foot + walk.eye, -3),
+        quaternion: new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.08, 0, 0, 'YXZ')),
+        fov: 70, foot,
+      };
+    }
+  }
   return { position: new THREE.Vector3(0, 0, 0), quaternion: info.startQuat.clone(), fov: info.walkFov(camera.aspect) };
+}
+
+// Stand the walker on the ground of the world as it is now: a correction round can
+// move the ground under someone walking (Claude often corrects the camera height).
+function reseat() {
+  const plan = current && current.sceneInfo;
+  if (!collider || !plan || !plan.surfaces) return;
+  const x = camera.position.x, z = camera.position.z;
+  const ground = surfaceTopAt(plan, x, -z) - Number(plan.camera.height_m);
+  const foot = collider.floorAt(x, z, ground + 0.5);
+  walk.foot = foot == null ? ground : foot;
+  camera.position.y = walk.foot + walk.eye;
 }
 
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
@@ -79,8 +118,10 @@ function setMode(next) {
   $('#mode-walk').setAttribute('aria-pressed', String(next === 'walk'));
   if (next === 'walk') {
     mode = 'flying'; orbit.enabled = false; orbit.autoRotate = false;
-    flyTo(walkPose(world.info), 1900, () => {
+    const pose = walkPose(world.info);
+    flyTo(pose, 1900, () => {
       mode = 'walk'; walk.enabled = true; walk.syncFromCamera();
+      reseat();   // the world may have been rebuilt during the flight
       $('#stick').hidden = !coarse;
       showHint();
     });
@@ -121,18 +162,29 @@ function describe(info, name) {
   depth.title = info.measured ? 'Depth is measured from the ground in this world' : '';
 }
 
-function setWorld({ scan, photo, name, sceneInfo = null }, { autoWalk = false, keepCamera = false } = {}) {
-  const next = buildWorld(scan, photo, { strength, scene: sceneInfo });
+function setWorld({ scan, photo, photoHi = null, name, sceneInfo = null }, { autoWalk = false, keepCamera = false } = {}) {
+  const next = buildWorld(scan, photo, { strength, scene: sceneInfo, photoHi });
+  next.prepare(renderer);   // the plan scene's depth pass, before it joins the scene
   if (world) { scene.remove(world.group); world.dispose(); }
   world = next;
-  current = { scan, photo, name, sceneInfo };
+  current = { scan, photo, photoHi, name, sceneInfo };
   scene.add(world.group);
+  // Claude's world is solid: walking follows its ground and stops at its walls and cars.
+  if (collider) { collider.dispose(); collider = null; }
+  walk.collide = null;
+  if (world.info.plan && makeCollider) {
+    world.group.updateMatrixWorld(true);
+    const meshes = world.planScene.meshes.filter((m) => !m.userData.paint);   // paint is flat, not a step
+    for (const m of world.models()) m.traverse((o) => { if (o.isMesh) meshes.push(o); });
+    collider = makeCollider(meshes);
+    walk.collide = collider;
+  }
   scene.fog = world.fog;
   walk.bounds = world.info.bounds;
   walk.speed = world.info.speed;
   describe(world.info, name);
   if (keepCamera) {
-    if (mode === 'walk') camera.fov = world.info.walkFov(camera.aspect);
+    if (mode === 'walk') { camera.fov = world.info.walkFov(camera.aspect); reseat(); }
     camera.updateProjectionMatrix();
     return;
   }
@@ -283,7 +335,7 @@ const available = (path) => fetch(path, { method: 'GET' }).then((r) => (r.ok ? r
 Promise.all([available('api/scene'), available('api/objects')]).then(([a, b]) => {
   smartAvailable = a; objectsAvailable = b;
   $('#smart-wrap').hidden = !(a || b);
-  $('#smart-wrap').title = [a && 'Claude reads a small copy of your photo to level the camera and spot real people', b && 'cars, bikes and buses are rebuilt in full 3D'].filter(Boolean).join('. ') + '.';
+  $('#smart-wrap').title = [a && 'Claude reads a small copy of your photo to level the camera, spot real people and describe each car so it can be built in 3D', b && 'fal.ai rebuilds cars, bikes and buses in full 3D'].filter(Boolean).join('. ') + '.';
   try { const v = localStorage.getItem(SMART_KEY); if (v !== null) $('#smart').checked = v === '1'; } catch {}
   syncPrivacyText();
 });
@@ -313,10 +365,79 @@ async function askClaude(photo, subjects) {
   } finally { clearTimeout(timer); }
 }
 
+// The frame as base64 JPEG for Claude, shrunk until it fits the request limit.
+function frameB64(canvas, maxChars = 1_600_000) {
+  let c = canvas;
+  for (;;) {
+    const b = c.toDataURL('image/jpeg', 0.85).split(',')[1];
+    if (b.length <= maxChars || Math.max(c.width, c.height) <= 1200) return b;
+    const d = document.createElement('canvas');
+    d.width = Math.round(c.width * 0.8); d.height = Math.round(c.height * 0.8);
+    d.getContext('2d').drawImage(c, 0, 0, d.width, d.height);
+    c = d;
+  }
+}
+
+async function sceneApi(body) {
+  const r = await fetch('api/scene', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(j.error || `status ${r.status}`), { status: r.status });
+  return j;
+}
+
+// Plan the place with Claude, build it, then let Claude correct it over a few rounds.
+async function buildWithClaude(job, { scan, photo, photoHi, name }) {
+  const image = frameB64(photoHi);
+  planState = 'planning';
+  status3d('Claude is planning the place…');
+  const t0 = performance.now();
+  const res = await sceneApi({
+    action: 'plan', image, width: photoHi.width, height: photoHi.height,
+    subjects: scan.subjects.map((sub, id) => ({ id, label: sub.label, box: [sub.box[0] / photo.width, sub.box[1] / photo.height, sub.box[2] / photo.width, sub.box[3] / photo.height] })),
+  });
+  if (job !== planJob) return;
+  const plan = validatePlan(res.plan);
+  planLog.push({ step: 'plan', ms: Math.round(performance.now() - t0), serverMs: res.ms, usage: res.usage, model: res.model, notes: plan?.notes || '' });
+  if (!plan || !plan.surfaces.length) throw new Error('Claude could not plan this place');
+  setWorld({ scan: keepRealSubjects(scan, plan), photo, photoHi, name, sceneInfo: plan });
+  planState = 'refining';
+  status3d(`Claude built the place · checking it (round 1 of ${PLAN_ROUNDS})`);
+  const out = await refineLoop({
+    plan, rounds: PLAN_ROUNDS,
+    render: async (p) => { const v = renderViews(renderer, scene, p, photoHi, world); return [v.camera, v.blend, v.top, v.back]; },
+    call: ({ round, renders, plan: p }) => sceneApi({ action: 'refine', image, renders, plan: p, round }),
+    apply: (p) => { if (job === planJob) setWorld({ scan: keepRealSubjects(scan, p), photo, photoHi, name, sceneInfo: p }, { keepCamera: true }); },
+    onRound: (info) => {
+      planLog.push({ step: 'refine', ...info });
+      if (job === planJob) status3d(`Round ${info.round} of ${PLAN_ROUNDS}: ${info.notes || 'checked'}`);
+    },
+    onRetry: (info) => {
+      planLog.push({ step: 'refine', round: info.round, retry: true, error: info.error.message, ms: info.ms });
+      if (job === planJob) status3d(`Round ${info.round} of ${PLAN_ROUNDS}: trying again (${info.error.message})`);
+    },
+    cancelled: () => job !== planJob,
+  });
+  if (job !== planJob) return;
+  if (out.stopped === 'error') {
+    // a half-built world must not stay on screen: go back to the last good plan
+    try { setWorld({ scan: keepRealSubjects(scan, out.plan), photo, photoHi, name, sceneInfo: out.plan }, { keepCamera: true }); } catch {}
+  }
+  planState = out.stopped === 'error' ? 'failed' : 'done';
+  status3d(out.stopped === 'done' ? `Claude is happy with the place after ${out.rounds} ${out.rounds === 1 ? 'round' : 'rounds'}` : `Claude checked the place ${out.rounds} ${out.rounds === 1 ? 'time' : 'times'}`);
+  if (out.error) toast(`Claude stopped correcting the place (${out.error.message}).`);
+}
+
 // ---------------------------------------------------------------- 3D objects (SAM 3D)
 let objectsJob = 0;
 const gltfLoader = new GLTFLoader();
 const plural3d = { car: 'cars', truck: 'trucks', bus: 'buses', motorcycle: 'motorcycles', bicycle: 'bicycles' };
+// "3D car built" when Claude's description became a model, else nothing.
+function builtStatus(w) {
+  const built = w.info.objects.filter((o) => o.built);
+  if (!built.length) return '';
+  const noun = built.length === 1 ? (built[0].name || `The ${built[0].label}`) : `${built.length} ${new Set(built.map((o) => o.label)).size === 1 ? plural3d[built[0].label] || 'vehicles' : 'vehicles'}`;
+  return `${noun} built in 3D · step sideways to see ${built.length === 1 ? 'it' : 'them'}`;
+}
 function status3d(text) {
   const el = $('#readout-3d');
   el.hidden = !text; el.textContent = text || '';
@@ -373,18 +494,26 @@ async function build3dObjects(photo, forWorld) {
       if (fit && fit.iou >= 0.3) placed++;
       console.info('[3d] fit', list[k].label, fit && { iou: +fit.iou.toFixed(2), color: +fit.colorDiff.toFixed(2), size: +fit.size.toFixed(2) });
     }
-    status3d(placed ? `3D ${placed === 1 ? list[0].label : noun} ready · step sideways to see ${placed === 1 ? 'it' : 'them'}` : '');
-    if (!placed) toast('The 3D model did not line up with the photo, so the flat version stays.');
+    status3d(placed ? `3D ${placed === 1 ? list[0].label : noun} ready · step sideways to see ${placed === 1 ? 'it' : 'them'}` : builtStatus(forWorld));
+    if (!placed && !builtStatus(forWorld)) toast('The 3D model did not line up with the photo, so the flat version stays.');
   } catch (e) {
-    if (job === objectsJob) { status3d(''); toast(`3D objects failed (${e.message}).`); }
+    if (job === objectsJob) { status3d(builtStatus(forWorld)); toast(`3D objects failed (${e.message}).`); }
   }
 }
 
-// Drop detections Claude says aren't real (signs, posters, drivers inside cars...).
+// Drop detections Claude says aren't real (signs, posters, drivers inside cars...),
+// and hand each vehicle Claude's description of it so it can be built in 3D.
 function keepRealSubjects(scan, sceneInfo) {
-  if (!sceneInfo || !Array.isArray(sceneInfo.subjects)) return scan;
-  const drop = new Set(sceneInfo.subjects.filter((v) => v && v.keep === false).map((v) => v.id));
-  return { ...scan, subjects: scan.subjects.filter((_, i) => !drop.has(i)) };
+  if (!sceneInfo) return scan;
+  const verdicts = Array.isArray(sceneInfo.subjects) ? sceneInfo.subjects : [];
+  const drop = new Set(verdicts.filter((v) => v && v.keep === false).map((v) => v.id));
+  const vehicles = Array.isArray(sceneInfo.vehicles) ? sceneInfo.vehicles : [];
+  return {
+    ...scan,
+    subjects: scan.subjects
+      .map((s, i) => ({ ...s, vehicle: vehicles.find((v) => v && v.id === i) || null }))
+      .filter((_, i) => !drop.has(i)),
+  };
 }
 function onDownload({ loaded, total, expected }) {
   $('#meter').hidden = false;
@@ -412,6 +541,8 @@ async function processFile(file) {
   resetSteps();
   $('#busy').hidden = false;
   try {
+    planJob++;
+    planState = 'idle'; planLog.length = 0; status3d('');
     let bitmap;
     try { bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
     catch { throw new Error('Your browser cannot open this photo format. Save it as JPG or PNG and try again.'); }
@@ -420,6 +551,15 @@ async function processFile(file) {
     const photo = document.createElement('canvas'); photo.width = W; photo.height = H;
     const ctx = photo.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(bitmap, 0, 0, W, H);
+    // Claude and the plan's projected texture get up to 2576 px (Opus's high-resolution limit);
+    // only the plan flow needs it.
+    let photoHi = null;
+    if (PLAN_MODE && smartOn()) {
+      const sHi = Math.min(1, 2576 / Math.max(bitmap.width, bitmap.height));
+      photoHi = document.createElement('canvas');
+      photoHi.width = Math.max(8, Math.round(bitmap.width * sHi)); photoHi.height = Math.max(8, Math.round(bitmap.height * sHi));
+      photoHi.getContext('2d', { willReadFrequently: true }).drawImage(bitmap, 0, 0, photoHi.width, photoHi.height);
+    }
     bitmap.close?.();
     const rgba = ctx.getImageData(0, 0, W, H).data;
     setStep('models');
@@ -428,15 +568,32 @@ async function processFile(file) {
       pending.set('job', { resolve, reject, id: ++jobId });
       w.postMessage({ type: 'scan', rgba: rgba.buffer, width: W, height: H }, [rgba.buffer]);
     });
+    lastScan = scan;
     let sceneInfo = null, sceneError = '';
+    if (smartOn() && PLAN_MODE) {
+      // Show the photo's own 2.5D world right away; Claude's plan replaces it when ready.
+      setStep('build'); await frame(); await frame();
+      const base = { scan, photo, photoHi, name: file.name || 'your photo' };
+      setWorld(base);
+      $('#busy').hidden = true;
+      const job = planJob;
+      buildWithClaude(job, base).catch((e) => {
+        if (job !== planJob) return;
+        planState = 'failed';
+        status3d('');
+        toast(`Claude could not build the place (${e.message}).`);
+      });
+      timings.push(['ready', Math.round(performance.now())]);
+      return;
+    }
     if (smartOn()) {
       setStep('claude');
       try { sceneInfo = await askClaude(photo, scan.subjects); }
       catch (e) { sceneError = e.name === 'AbortError' ? 'Claude took too long' : e.message; }
     }
     setStep('build'); await frame(); await frame();
-    setWorld({ scan: keepRealSubjects(scan, sceneInfo), photo, name: file.name || 'your photo', sceneInfo }, { autoWalk: true });
-    status3d('');
+    setWorld({ scan: keepRealSubjects(scan, sceneInfo), photo, photoHi, name: file.name || 'your photo', sceneInfo }, { autoWalk: true });
+    status3d(builtStatus(world));
     if (objectsOn() && world.info.objects.length) build3dObjects(photo, world);
     if (sceneError) toast(`Built the world without Claude (${sceneError}).`);
     timings.push(['ready', Math.round(performance.now())]);
@@ -476,6 +633,7 @@ async function loadSample() {
     fetch('sample/forest-path.scene.json').then(r => (r.ok ? r.json() : null)).catch(() => null),
   ]);
   const scan = decodeScan(buf);
+  lastScan = scan;
   const photo = document.createElement('canvas'); photo.width = scan.width; photo.height = scan.height;
   photo.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0, scan.width, scan.height);
   setWorld({ scan: keepRealSubjects(scan, sceneInfo), photo, name: 'forest-path.jpg', sceneInfo });
@@ -483,5 +641,20 @@ async function loadSample() {
 loadSample().catch(() => toast('The sample world did not load. You can still use your own photo.'));
 
 // For automated checks.
-window.__pw = { timings, get mode() { return mode; }, get world() { return world; }, setMode, processFile, camera, walk, orbit, renderer, scene };
+window.__pw = {
+  timings, get mode() { return mode; }, get world() { return world; }, setMode, processFile, camera, walk, orbit, renderer, scene,
+  get plan() { return current?.sceneInfo?.surfaces ? current.sceneInfo : null; },
+  get lastScan() { return lastScan; },
+  planLog,
+  get planState() { return planState; },
+  views() { return this.plan ? renderViews(renderer, scene, this.plan, current.photoHi || current.photo, world) : null; },
+  // Build the current photo from a plan without calling Claude (tests and debugging).
+  // opts takes { keepCamera: true } to rebuild the way a correction round does.
+  setPlan(raw, opts = {}) {
+    const p = validatePlan(raw);
+    if (!p || !p.surfaces.length || !current || !lastScan) return null;
+    setWorld({ ...current, scan: keepRealSubjects(lastScan, p), sceneInfo: p }, opts);
+    return p;
+  },
+};
 window.__THREE = THREE;

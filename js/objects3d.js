@@ -42,6 +42,8 @@ export function samplePoints(root, maxPoints = 3500) {
  * @param {(u:number,v:number)=>number} o.depthAt  photo depth (distance) at a pixel
  * @param {number} o.pitch       known camera tilt (radians, + = looking down)
  * @param {boolean} o.searchPitch  also search the tilt (when it isn't known)
+ * @param {number} [o.yawCenter]  expected heading (radians), with
+ * @param {number} [o.yawSpan]    how far to search either side of it
  * @returns {{matrix: THREE.Matrix4, iou:number, colorDiff:number, yaw:number, pitch:number} | null}
  */
 export function fitObject(o) {
@@ -153,14 +155,19 @@ export function fitObject(o) {
   };
 
   const pitches = o.searchPitch ? [0, 10, 20, 30, 40, 50, 60].map((d) => d * DEG) : [o.pitch];
+  // Either every heading, or (when we know roughly which way it faces, which
+  // a silhouette alone can't tell front from back) a window around that.
+  const yaws = [];
+  if (o.yawSpan != null) for (let d = -o.yawSpan; d <= o.yawSpan + 1e-6; d += 5 * DEG) yaws.push(o.yawCenter + d);
+  else for (let yd = 0; yd < 360; yd += 15) yaws.push(yd * DEG);
   let best = null;
-  for (const p of pitches) for (let yd = 0; yd < 360; yd += 15) {
-    const r = tryPose(yd * DEG, p);
+  for (const p of pitches) for (const yaw of yaws) {
+    const r = tryPose(yaw, p);
     if (r && (!best || r.value > best.value)) best = r;
   }
   if (!best) return null;
   // Refine around the best guess.
-  for (const step of [5, 2]) {
+  for (const step of o.yawSpan != null ? [2, 1] : [5, 2]) {
     const base = best;
     for (let dy = -2; dy <= 2; dy++) for (let dp = o.searchPitch ? -1 : 0; dp <= (o.searchPitch ? 1 : 0); dp++) {
       if (!dy && !dp) continue;

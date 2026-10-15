@@ -14,6 +14,8 @@ import * as THREE from 'three';
 import { pullPush, fillCloned, rankFilter, boxBlur, resample, percentile } from './fill.js';
 import { buildSurroundings } from './surroundings.js';
 import { samplePoints, fitObject } from './objects3d.js';
+import { buildCar, canBuild, photoDepth, matchPaint, carMaterial, carShadow } from './carmodel.js';
+import { buildPlanScene, surfaceTopAt } from './scenebuild.js';
 
 const VEHICLES = new Set(['car', 'truck', 'bus', 'motorcycle', 'bicycle']);
 
@@ -121,10 +123,13 @@ function texFrom(canvas) {
  * @param {{strength?: number, scene?: object}} opts
  *   strength  depth strength, 0.5 (flat) to 2 (deep), used when depth isn't measured
  *   scene     Claude's description of the photo (api/scene.js), optional
+ *   photoHi   the photo at up to 2576 px, used to paint Claude's plan of the place (optional)
  */
-export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
+export function buildWorld(scan, photo, { strength = 1, scene = null, photoHi = null } = {}) {
   const W = scan.width, H = scan.height;
   const L = Math.max(W, H);
+  // Claude's full plan of the place replaces the depth sheet (layers A and B).
+  const planMode = Boolean(scene && Array.isArray(scene.surfaces) && scene.surfaces.length);
   const hfov = scene ? clamp(Number(scene.camera?.hfov_deg) || 0, 0, 120) : 0;
   const f = hfov >= 25 ? (W / 2) / Math.tan((hfov * Math.PI) / 360) : (L / 2) / Math.tan((FOV_LONG_DEG * Math.PI) / 360);
   const cx = W / 2, cy = H / 2;
@@ -239,6 +244,28 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
       }
     });
     for (let i = 0; i < dnFill.length; i++) if (wt[i] === 0 && dnFill[i] > cap[i]) dnFill[i] = cap[i];
+    // With measured depth, the gap a vehicle leaves is road: lay it on the
+    // ground plane, so a 3D car stands on the road instead of in front of a ramp.
+    if (calib) {
+      const vm = new Uint8Array(gw * gh);
+      for (const s of scan.subjects) {
+        if (!VEHICLES.has(s.label)) continue;
+        const [x0, y0, cw, ch] = s.crop;
+        for (let y = 0; y < ch; y += 2) for (let x = 0; x < cw; x += 2) {
+          if (s.alpha[y * cw + x] <= 127) continue;
+          vm[Math.round(((y + y0) / H) * (gh - 1)) * gw + Math.round(((x + x0) / W) * (gw - 1))] = 1;
+        }
+      }
+      const cp = Math.cos(pitch), sp = Math.sin(pitch);
+      for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++) {
+        const k = j * gw + i;
+        if (wt[k] !== 0 || !(vm[k] || (i > 0 && vm[k - 1]) || (i < gw - 1 && vm[k + 1]) || (j > 0 && vm[k - gw]) || (j < gh - 1 && vm[k + gw]))) continue;
+        const yW = (-((j / (gh - 1)) * H - cy) / f) * cp - sp;
+        if (yW > -0.01) continue;
+        const dg = (yW * -1 / calib.h - calib.b) / calib.a;
+        if (dg < dnFill[k]) dnFill[k] = dg;
+      }
+    }
   }
 
   // --- Texture A: the photo with people painted out -----------------------
@@ -350,11 +377,11 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
   const matA = worldMat(texACanvas, 1);
   const meshA = new THREE.Mesh(A.main, matA);
   const meshB = new THREE.Mesh(B.main, worldMat(texBCanvas, 0.94));
-  content.add(meshB, meshA);
+  if (!planMode) content.add(meshB, meshA);
   // Torn triangles keep the photo pixel-perfect from where it was taken,
   // then dissolve as soon as you move, revealing layer B.
   let edgeMat = null;
-  if (A.edge) {
+  if (A.edge && !planMode) {
     edgeMat = new THREE.ShaderMaterial({
       vertexShader: worldVert, fragmentShader: worldFrag, side: THREE.DoubleSide, transparent: true, depthWrite: false,
       uniforms: { ...matA.uniforms, opacity: { value: 1 } },
@@ -420,7 +447,7 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
       const relief = new THREE.Mesh(geo, material);
       relief.renderOrder = 2;
       content.add(relief);
-      objects.push({ label: s.label, box: s.box, crop: s.crop, alpha: s.alpha, relief, material, model: null });
+      objects.push({ label: s.label, box: s.box, crop: s.crop, alpha: s.alpha, relief, material, model: null, vehicle: s.vehicle || null });
       continue;
     }
     const zS = zOf(dnS) * 0.985;
@@ -458,6 +485,11 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
     });
   }
 
+  // Vehicles Claude described become full 3D models right away.
+  let photoTex = null;
+  const up = new THREE.Vector3(0, 1, 0);
+  if (scene) objects.forEach((ob, i) => { if (canBuild(ob.vehicle)) attachCar(i); });
+
   // --- Backdrop sphere -----------------------------------------------------
   const skyRadius = calib ? 2500 : far * 6;
   const sky = new THREE.Mesh(new THREE.SphereGeometry(skyRadius, 32, 16), new THREE.ShaderMaterial({
@@ -466,6 +498,23 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
   }));
   sky.renderOrder = -1;
   group.add(sky);
+
+  // --- Claude's plan of the place ------------------------------------------
+  // People and cars keep their own placement above; the plan's surfaces and
+  // objects take the depth sheet's place.
+  let planScene = null;
+  if (planMode) {
+    const nd = document.createElement('canvas'); nd.width = W; nd.height = H;
+    const ndc = nd.getContext('2d');
+    const ndi = ndc.createImageData(W, H);
+    for (let i = 0; i < W * H; i++) {
+      const v = maskWide[i] > 0.5 ? 255 : 0;
+      ndi.data[i * 4] = ndi.data[i * 4 + 1] = ndi.data[i * 4 + 2] = v; ndi.data[i * 4 + 3] = 255;
+    }
+    ndc.putImageData(ndi, 0, 0);
+    planScene = buildPlanScene(scene, { photo: photoHi || photo, noData: nd });
+    group.add(planScene.group);
+  }
 
   // --- Numbers the viewer needs -------------------------------------------
   const zs = [];
@@ -481,7 +530,9 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
   const nearestZ = subjects.reduce((m, s) => Math.min(m, s.z / unit), Infinity);
   const room = Number.isFinite(nearestZ) ? Math.min(1, Math.max(0.4, nearestZ / 3)) : 1;
   const reach = room * unit * (withSurroundings ? 1.8 : 1);
-  const bounds = { minX: -0.45 * reach, maxX: 0.45 * reach, minZ: -0.9 * reach, maxZ: 0.35 * reach };
+  const bounds = planMode
+    ? { minX: -0.6 * scene.extent_m, maxX: 0.6 * scene.extent_m, minZ: -0.6 * scene.extent_m, maxZ: 0.6 * scene.extent_m }
+    : { minX: -0.45 * reach, maxX: 0.45 * reach, minZ: -0.9 * reach, maxZ: 0.35 * reach };
 
   // --- Surroundings beyond the frame --------------------------------------
   let surroundings = null;
@@ -533,7 +584,11 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
         ob.material.uniforms.opacity.value = fade;
         ob.relief.visible = fade > 0.003;
         // Cross-fade: the model only appears once you step away from the photo.
-        for (const m of ob.modelMats) { m.opacity = 1 - fade; m.transparent = fade > 0.003; m.depthWrite = true; }
+        for (const m of ob.modelMats) {
+          if (m.uniforms?.opacity) m.uniforms.opacity.value = 1 - fade; else m.opacity = 1 - fade;
+          if (m.userData.overlay) continue;
+          m.transparent = fade > 0.003; m.depthWrite = true;
+        }
         ob.model.visible = fade < 0.997;
       }
     }
@@ -549,17 +604,120 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
     sky.geometry.dispose(); sky.material.dispose();
     textures.forEach(t => t.dispose());
     if (surroundings) surroundings.dispose();
+    if (planScene) {
+      planScene.dispose();
+      // Built but never added to `content`, so the traverse above missed them.
+      A.main.dispose(); if (A.edge) A.edge.dispose(); B.main.dispose(); matA.dispose(); meshB.material.dispose();
+    }
+  }
+
+  // With measured depth, rest a model on the ground. Scaling about the camera
+  // keeps it exactly on its outline in the photo.
+  function restOnGround(matrix, points) {
+    if (!calib) return matrix;
+    const v = new THREE.Vector3(), ys = [];
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    for (let i = 0; i < points.n; i++) {
+      v.set(points.pos[i * 3], points.pos[i * 3 + 1], points.pos[i * 3 + 2]).applyMatrix4(matrix);
+      ys.push(v.y * cp + v.z * sp);
+    }
+    ys.sort((a, b) => a - b);
+    const low = ys[Math.floor(ys.length * 0.004)];
+    if (!(low < 0)) return matrix;
+    const k = -calib.h / low;
+    if (k < 0.6 || k > 1.6) return matrix;
+    return new THREE.Matrix4().makeScale(k, k, k).multiply(matrix);
+  }
+
+  function setModel(ob, node, matrix, mats, kind) {
+    if (ob.model) {
+      content.remove(ob.model);
+      ob.model.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+      for (const m of ob.modelMats) { (m.userData.textures || []).forEach((t) => t.dispose()); m.dispose(); }
+    }
+    const holder = new THREE.Group();
+    holder.matrixAutoUpdate = false;
+    holder.matrix.copy(matrix);
+    holder.add(node);
+    content.add(holder);
+    ob.model = holder; ob.modelMats = mats; ob.modelKind = kind;
+    // The relief now sits on top as a fade-out layer.
+    ob.material.depthTest = false;
+    ob.material.depthWrite = false;
+    ob.relief.renderOrder = 3;
   }
 
   /**
-   * Replace vehicle `i`'s relief with a generated 3D model (a loaded glTF scene).
-   * Returns the fit (with its silhouette match), or null if it didn't fit.
+   * Build vehicle `i` from Claude's description (body style, size, colors,
+   * heading), line it up with the photo and paint it with the photo.
+   */
+  function attachCar(i) {
+    const ob = objects[i];
+    const car = buildCar(ob.vehicle);
+    if (!car) return null;
+    const heading = ((Number(ob.vehicle.heading_deg) || 0) * Math.PI) / 180;
+    let fit = fitObject({
+      points: car.points, alpha: ob.alpha, crop: ob.crop, f, cx, cy, photo: px, W,
+      depthAt: (u, v) => zOf(dnAt(u, v)), pitch, searchPitch: false,
+      yawCenter: heading, yawSpan: (50 * Math.PI) / 180,
+    });
+    let matrix = null;
+    if (fit && fit.iou >= 0.3 && (calib || !planMode)) {
+      matrix = restOnGround(fit.matrix, car.points);
+    } else if (planMode && Array.isArray(ob.vehicle.at)) {
+      // The photo can't place it in metres: stand it where Claude's plan says,
+      // on the plan's ground, turned to its heading (camera frame = levelled turned by the tilt).
+      const [r, fw] = ob.vehicle.at;
+      const tilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), pitch);
+      const pos = new THREE.Vector3(r, surfaceTopAt(scene, r, fw) - Number(scene.camera.height_m), -fw).applyQuaternion(tilt);
+      const rot = tilt.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), heading));
+      matrix = new THREE.Matrix4().compose(pos, rot, new THREE.Vector3(1, 1, 1));
+      fit = { ...(fit || { iou: 0, yaw: heading }), fromPlan: true };
+    }
+    ob.carFit = fit;
+    if (!matrix) { car.geometry.dispose(); return fit; }
+    const cam = { f, cx, cy, W, H };
+    const depth = photoDepth(car.geometry, matrix, cam);
+    // The cutout, pulled in a little so background pixels at its edge don't paint the car.
+    const [x0, y0, cw, ch] = ob.crop;
+    const a = Float32Array.from(ob.alpha, (v) => v / 255);
+    const shrunk = rankFilter(a, cw, ch, Math.max(1, Math.round(Math.max(cw, ch) / 160)), 'min');
+    const m8 = Uint8Array.from(shrunk, (v) => Math.round(v * 255));
+    const maskTex = new THREE.DataTexture(m8, cw, ch, THREE.RedFormat);
+    maskTex.unpackAlignment = 1; maskTex.minFilter = maskTex.magFilter = THREE.LinearFilter; maskTex.needsUpdate = true;
+    textures.push(maskTex);
+    const seen = (u, v) => {
+      const x = Math.floor(u) - x0, y = Math.floor(v) - y0;
+      if (x < 0 || y < 0 || x >= cw || y >= ch || m8[y * cw + x] < 200) return null;
+      const p = (Math.floor(v) * W + Math.floor(u)) * 4;
+      return [px[p], px[p + 1], px[p + 2]];
+    };
+    matchPaint(car, matrix, cam, depth, seen);
+    if (!photoTex) {
+      photoTex = new THREE.DataTexture(new Uint8Array(px), W, H, THREE.RGBAFormat);
+      photoTex.colorSpace = THREE.NoColorSpace;
+      photoTex.minFilter = photoTex.magFilter = THREE.LinearFilter;
+      photoTex.needsUpdate = true;
+      textures.push(photoTex);
+    }
+    const mat = carMaterial({ photoTex, depth, maskTex, matrix, cam, crop: ob.crop, up });
+    const node = new THREE.Group();
+    const shadow = carShadow(car.size);
+    node.add(new THREE.Mesh(car.geometry, mat), shadow);
+    setModel(ob, node, matrix, [mat, shadow.material], 'claude');
+    return fit;
+  }
+
+  /**
+   * Replace vehicle `i` with a generated 3D model (a loaded glTF scene from
+   * SAM 3D). Returns the fit (with its silhouette match), or null if it didn't fit.
    */
   function attachModel(i, root) {
     const ob = objects[i];
-    if (!ob || ob.model) return null;
+    if (!ob || ob.modelKind === 'fal') return null;
+    const points = samplePoints(root);
     const fit = fitObject({
-      points: samplePoints(root), alpha: ob.alpha, crop: ob.crop, f, cx, cy, photo: px, W,
+      points, alpha: ob.alpha, crop: ob.crop, f, cx, cy, photo: px, W,
       depthAt: (u, v) => zOf(dnAt(u, v)), pitch, searchPitch: !scene,
     });
     if (!fit || fit.iou < 0.3) return fit;
@@ -585,32 +743,25 @@ export function buildWorld(scan, photo, { strength = 1, scene = null } = {}) {
       modelMats.push(mat);
       old.dispose?.();
     });
-    const holder = new THREE.Group();
-    holder.matrixAutoUpdate = false;
-    holder.matrix.copy(fit.matrix);
-    holder.add(root);
-    content.add(holder);
-    ob.model = holder;
-    ob.modelMats = modelMats;
-    // The relief now sits on top as a fade-out layer.
-    ob.material.depthTest = false;
-    ob.material.depthWrite = false;
-    ob.relief.renderOrder = 3;
+    setModel(ob, root, restOnGround(fit.matrix, points), modelMats, 'fal');
     return fit;
   }
 
   return {
     group, update, dispose, attachModel,
+    prepare: (renderer) => { if (planScene) planScene.prepare(renderer); },
+    planScene,
     models: () => objects.filter((o) => o.model).map((o) => o.model),
     info: {
-      width: W, height: H, near, far, zMedian, bounds, sphere, walkFov, startQuat, focus,
-      speed: 0.42 * room * unit,
+      width: W, height: H, near, far, zMedian, bounds, sphere, walkFov: planMode ? () => 70 : walkFov, startQuat, focus,
+      speed: planMode ? 2 : 0.42 * room * unit,
       triangles: A.tris + B.tris,
       subjects: [...subjects.map(s => s.label), ...objects.map(o => o.label)],
-      objects: objects.map((o) => ({ label: o.label, box: o.box, crop: o.crop, alpha: o.alpha })),
+      objects: objects.map((o) => ({ label: o.label, box: o.box, crop: o.crop, alpha: o.alpha, built: o.modelKind === 'claude', name: (o.vehicle && String(o.vehicle.make_model || '').slice(0, 40)) || '', fit: o.carFit ? { iou: o.carFit.iou, yaw: o.carFit.yaw, fromPlan: Boolean(o.carFit.fromPlan) } : null })),
       measured: Boolean(calib), calib, levelled: Boolean(scene), surroundings: withSurroundings,
+      plan: planMode,
       caption: scene?.caption || '',
     },
-    fog: surroundings ? surroundings.fog : null,
+    fog: planScene ? planScene.fog : surroundings ? surroundings.fog : null,
   };
 }
