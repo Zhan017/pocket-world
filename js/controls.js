@@ -2,6 +2,8 @@
 // The walker stays inside a box around the original camera position, because
 // the further you go, the more of the world the photo never saw.
 
+import { walkStep } from './walk.js';
+
 export class WalkControls {
   constructor(camera, dom, stick) {
     this.camera = camera;
@@ -12,6 +14,9 @@ export class WalkControls {
     this.yaw = 0; this.pitch = 0;
     this.speed = 1;
     this.bounds = { minX: -1, maxX: 1, minZ: -1, maxZ: 1 };
+    this.collide = null;   // a collider (js/collide.js) when the world has solid ground and walls
+    this.foot = 0;         // height of the surface under you (with a collider)
+    this.eye = 1.6;
     this.keys = new Set();
     this.look = null;          // { id, x, y }
     this.stickVec = { x: 0, y: 0 };
@@ -108,9 +113,17 @@ export class WalkControls {
     const dz = (-cy * fwd - sy * side) * sp * dt - cy * wheelStep * this.speed * 0.2;
     const p = this.camera.position, b = this.bounds;
     const ox = p.x, oz = p.z;
-    p.x = Math.min(b.maxX, Math.max(b.minX, p.x + dx));
-    p.z = Math.min(b.maxZ, Math.max(b.minZ, p.z + dz));
-    p.y = 0;
+    if (this.collide) {
+      const next = walkStep({ x: p.x, z: p.z, foot: this.foot }, dx, dz, this.collide.floorAt, this.collide.hitAhead, { eye: this.eye });
+      p.x = Math.min(b.maxX, Math.max(b.minX, next.x));
+      p.z = Math.min(b.maxZ, Math.max(b.minZ, next.z));
+      this.foot = next.foot;
+      p.y = this.foot + this.eye;
+    } else {
+      p.x = Math.min(b.maxX, Math.max(b.minX, p.x + dx));
+      p.z = Math.min(b.maxZ, Math.max(b.minZ, p.z + dz));
+      p.y = 0;
+    }
     this.moved += Math.hypot(p.x - ox, p.z - oz);
     this.apply();
   }

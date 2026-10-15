@@ -6,6 +6,7 @@ import { WalkControls } from './controls.js';
 import { decodeScan } from './scan-format.js';
 import { validatePlan } from './plan.js';
 import { refineLoop } from './refine-loop.js';
+import { makeCollider } from './collide.js';
 import { renderViews } from './refine.js';
 
 const $ = (s) => document.querySelector(s);
@@ -37,6 +38,7 @@ const walk = new WalkControls(camera, canvas, $('#stick'));
 let world = null;
 let current = null;           // { scan, photo, name }
 let lastScan = null;
+let collider = null;
 // Claude World (docs/superpowers/specs/2026-10-15-claude-world-design.md):
 // behind ?plan=1 while it is being built, so the live site is unchanged.
 const PLAN_MODE = new URLSearchParams(location.search).has('plan');
@@ -72,6 +74,17 @@ function dioramaPose(info) {
 }
 
 function walkPose(info) {
+  if (info.plan && collider) {
+    // Step down from the camera to the street, 3 m ahead of the point below it.
+    const foot = collider.floorAt(0, -3, 0);
+    if (foot != null) {
+      return {
+        position: new THREE.Vector3(0, foot + walk.eye, -3),
+        quaternion: new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.08, 0, 0, 'YXZ')),
+        fov: 70, foot,
+      };
+    }
+  }
   return { position: new THREE.Vector3(0, 0, 0), quaternion: info.startQuat.clone(), fov: info.walkFov(camera.aspect) };
 }
 
@@ -90,8 +103,10 @@ function setMode(next) {
   $('#mode-walk').setAttribute('aria-pressed', String(next === 'walk'));
   if (next === 'walk') {
     mode = 'flying'; orbit.enabled = false; orbit.autoRotate = false;
-    flyTo(walkPose(world.info), 1900, () => {
+    const pose = walkPose(world.info);
+    flyTo(pose, 1900, () => {
       mode = 'walk'; walk.enabled = true; walk.syncFromCamera();
+      if (pose.foot != null) walk.foot = pose.foot;
       $('#stick').hidden = !coarse;
       showHint();
     });
@@ -139,6 +154,16 @@ function setWorld({ scan, photo, photoHi = null, name, sceneInfo = null }, { aut
   world = next;
   current = { scan, photo, photoHi, name, sceneInfo };
   scene.add(world.group);
+  // Claude's world is solid: walking follows its ground and stops at its walls and cars.
+  if (collider) { collider.dispose(); collider = null; }
+  walk.collide = null;
+  if (world.info.plan) {
+    world.group.updateMatrixWorld(true);
+    const meshes = [...world.planScene.meshes];
+    for (const m of world.models()) m.traverse((o) => { if (o.isMesh) meshes.push(o); });
+    collider = makeCollider(meshes);
+    walk.collide = collider;
+  }
   scene.fog = world.fog;
   walk.bounds = world.info.bounds;
   walk.speed = world.info.speed;

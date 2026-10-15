@@ -741,7 +741,7 @@ export function buildWorld(scan, photo, { strength = 1, scene = null, photoHi = 
     planScene,
     models: () => objects.filter((o) => o.model).map((o) => o.model),
     info: {
-      width: W, height: H, near, far, zMedian, bounds, sphere, walkFov, startQuat, focus,
+      width: W, height: H, near, far, zMedian, bounds, sphere, walkFov: planMode ? () => 70 : walkFov, startQuat, focus,
       speed: planMode ? 2 : 0.42 * room * unit,
       triangles: A.tris + B.tris,
       subjects: [...subjects.map(s => s.label), ...objects.map(o => o.label)],
