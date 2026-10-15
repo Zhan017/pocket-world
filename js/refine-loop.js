@@ -28,8 +28,11 @@ export async function refineLoop({ plan, rounds = 5, render, call, apply, onRoun
     if (cancelled()) return { plan: current, rounds: round - 1, stopped: 'cancelled' };
     const next = applyPatch(current, res && res.patch);
     const accepted = next !== current;   // applyPatch hands back the same plan when it refuses a patch
-    if (accepted) { current = next; apply(current); }
-    const done = Boolean(res && res.patch && res.patch.done);
+    if (accepted) {
+      try { apply(next); } catch (error) { return { plan: current, rounds: round - 1, stopped: 'error', error }; }
+      current = next;
+    }
+    const done = accepted && Boolean(res && res.patch && res.patch.done);
     onRound({ round, notes: String((res && res.patch && res.patch.notes) || ''), done, accepted, ms: Date.now() - t0, usage: (res && res.usage) || null });
     if (!accepted) return { plan: current, rounds: round, stopped: 'rejected' };
     if (done) return { plan: current, rounds: round, stopped: 'done' };

@@ -65,3 +65,18 @@ test('stops when cancelled', async () => {
   assert.equal(out.stopped, 'cancelled');
   assert.equal(h.applied.length, 0);
 });
+
+test('stops when the rebuild throws and keeps the last good plan', async () => {
+  const h = harness([patch()]);
+  const out = await refineLoop({ ...h.opts, apply: () => { throw new Error('webgl lost'); } });
+  assert.equal(out.stopped, 'error');
+  assert.equal(out.plan, plan);
+  assert.match(out.error.message, /webgl lost/);
+});
+
+test('a rejected patch is never reported as done', async () => {
+  const h = harness([patch({ remove: ['s1'], done: true })]);
+  const out = await refineLoop(h.opts);
+  assert.equal(out.stopped, 'rejected');
+  assert.equal(h.rounds[0].done, false);
+});
