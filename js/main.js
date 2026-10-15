@@ -5,6 +5,8 @@ import { buildWorld } from './world.js';
 import { WalkControls } from './controls.js';
 import { decodeScan } from './scan-format.js';
 import { validatePlan } from './plan.js';
+import { refineLoop } from './refine-loop.js';
+import { renderViews } from './refine.js';
 
 const $ = (s) => document.querySelector(s);
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -35,6 +37,13 @@ const walk = new WalkControls(camera, canvas, $('#stick'));
 let world = null;
 let current = null;           // { scan, photo, name }
 let lastScan = null;
+// Claude World (docs/superpowers/specs/2026-10-15-claude-world-design.md):
+// behind ?plan=1 while it is being built, so the live site is unchanged.
+const PLAN_MODE = new URLSearchParams(location.search).has('plan');
+const PLAN_ROUNDS = 5;
+const planLog = [];
+let planJob = 0;
+let planState = 'idle';
 let mode = 'diorama';         // 'diorama' | 'walk' | 'flying'
 let strength = 1;
 let lastInteract = performance.now();
@@ -316,6 +325,60 @@ async function askClaude(photo, subjects) {
   } finally { clearTimeout(timer); }
 }
 
+// The frame as base64 JPEG for Claude, shrunk until it fits the request limit.
+function frameB64(canvas, maxChars = 1_600_000) {
+  let c = canvas;
+  for (;;) {
+    const b = c.toDataURL('image/jpeg', 0.85).split(',')[1];
+    if (b.length <= maxChars || Math.max(c.width, c.height) <= 1200) return b;
+    const d = document.createElement('canvas');
+    d.width = Math.round(c.width * 0.8); d.height = Math.round(c.height * 0.8);
+    d.getContext('2d').drawImage(c, 0, 0, d.width, d.height);
+    c = d;
+  }
+}
+
+async function sceneApi(body) {
+  const r = await fetch('api/scene', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `status ${r.status}`);
+  return j;
+}
+
+// Plan the place with Claude, build it, then let Claude correct it over a few rounds.
+async function buildWithClaude(job, { scan, photo, photoHi, name }) {
+  const image = frameB64(photoHi);
+  planState = 'planning';
+  status3d('Claude is planning the place…');
+  const t0 = performance.now();
+  const res = await sceneApi({
+    action: 'plan', image, width: photoHi.width, height: photoHi.height,
+    subjects: scan.subjects.map((sub, id) => ({ id, label: sub.label, box: [sub.box[0] / photo.width, sub.box[1] / photo.height, sub.box[2] / photo.width, sub.box[3] / photo.height] })),
+  });
+  if (job !== planJob) return;
+  const plan = validatePlan(res.plan);
+  planLog.push({ step: 'plan', ms: Math.round(performance.now() - t0), serverMs: res.ms, usage: res.usage, model: res.model, notes: plan?.notes || '' });
+  if (!plan || !plan.surfaces.length) throw new Error('Claude could not plan this place');
+  setWorld({ scan: keepRealSubjects(scan, plan), photo, photoHi, name, sceneInfo: plan });
+  planState = 'refining';
+  status3d(`Claude built the place · checking it (round 1 of ${PLAN_ROUNDS})`);
+  const out = await refineLoop({
+    plan, rounds: PLAN_ROUNDS,
+    render: async (p) => { const v = renderViews(renderer, scene, p, photoHi, world.planScene); return [v.camera, v.blend, v.top, v.back]; },
+    call: ({ round, renders, plan: p }) => sceneApi({ action: 'refine', image, renders, plan: p, round }),
+    apply: (p) => { if (job === planJob) setWorld({ scan: keepRealSubjects(scan, p), photo, photoHi, name, sceneInfo: p }, { keepCamera: true }); },
+    onRound: (info) => {
+      planLog.push({ step: 'refine', ...info });
+      if (job === planJob) status3d(`Round ${info.round} of ${PLAN_ROUNDS}: ${info.notes || 'checked'}`);
+    },
+    cancelled: () => job !== planJob,
+  });
+  if (job !== planJob) return;
+  planState = out.stopped === 'error' ? 'failed' : 'done';
+  status3d(out.stopped === 'done' ? `Claude is happy with the place after ${out.rounds} ${out.rounds === 1 ? 'round' : 'rounds'}` : `Claude checked the place ${out.rounds} ${out.rounds === 1 ? 'time' : 'times'}`);
+  if (out.error) toast(`Claude stopped correcting the place (${out.error.message}).`);
+}
+
 // ---------------------------------------------------------------- 3D objects (SAM 3D)
 let objectsJob = 0;
 const gltfLoader = new GLTFLoader();
@@ -430,6 +493,7 @@ async function processFile(file) {
   resetSteps();
   $('#busy').hidden = false;
   try {
+    planJob++;
     let bitmap;
     try { bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
     catch { throw new Error('Your browser cannot open this photo format. Save it as JPG or PNG and try again.'); }
@@ -453,6 +517,22 @@ async function processFile(file) {
     });
     lastScan = scan;
     let sceneInfo = null, sceneError = '';
+    if (smartOn() && PLAN_MODE) {
+      // Show the photo's own 2.5D world right away; Claude's plan replaces it when ready.
+      setStep('build'); await frame(); await frame();
+      const base = { scan, photo, photoHi, name: file.name || 'your photo' };
+      setWorld(base);
+      $('#busy').hidden = true;
+      const job = planJob;
+      buildWithClaude(job, base).catch((e) => {
+        if (job !== planJob) return;
+        planState = 'failed';
+        status3d('');
+        toast(`Claude could not build the place (${e.message}).`);
+      });
+      timings.push(['ready', Math.round(performance.now())]);
+      return;
+    }
     if (smartOn()) {
       setStep('claude');
       try { sceneInfo = await askClaude(photo, scan.subjects); }
@@ -512,6 +592,9 @@ window.__pw = {
   timings, get mode() { return mode; }, get world() { return world; }, setMode, processFile, camera, walk, orbit, renderer, scene,
   get plan() { return current?.sceneInfo?.surfaces ? current.sceneInfo : null; },
   get lastScan() { return lastScan; },
+  planLog,
+  get planState() { return planState; },
+  views() { return this.plan ? renderViews(renderer, scene, this.plan, current.photoHi || current.photo, world.planScene) : null; },
   // Build the current photo from a plan without calling Claude (tests and debugging).
   setPlan(raw) {
     const p = validatePlan(raw);
